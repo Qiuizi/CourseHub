@@ -2,7 +2,7 @@
 node_modules/
 out/
 release/
-release-verify/
+release-*/
 dist/
 
 # TypeScript 增量编译缓存
