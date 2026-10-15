@@ -79,7 +79,8 @@ async function main() {
       const r = await window.coursehub.platform.list()
       return r.ok ? r.data.length : -1
     })
-    record('平台列表加载', platformCount === 3, `返回 ${platformCount} 个平台（期望 3）`)
+    // v0.3 起含「测试台」（自有测试站点，开发文档 §2.2），共 4 个
+    record('平台列表加载', platformCount === 4, `返回 ${platformCount} 个平台（期望 4：学习通/雨课堂/智慧树/测试台）`)
 
     const caps = await win.evaluate(async () => {
       const r = await window.coursehub.platform.list()
@@ -404,7 +405,101 @@ async function main() {
     )
 
     /* ---------------------------------------------------------------- */
-    /* 5. 安全边界                                                        */
+    /* 6. UI 场景与原生视图可见性（v0.3 新增）                            */
+    /* ---------------------------------------------------------------- */
+
+    // 6.1 六个场景都能渲染
+    const scenes = await win.evaluate(async () => {
+      const out = {}
+      const labels = ['视频课堂', '章节作业', '课堂签到', '平台浏览', '定位测试', 'AI 助手']
+      for (const label of labels) {
+        const clicked = await new Promise((resolve) => {
+          const btn = Array.from(document.querySelectorAll('[data-scene]')).find(
+            (b) => (b.textContent || '').trim() === label
+          )
+          if (!btn) { resolve(false); return }
+          btn.click()
+          setTimeout(() => resolve(true), 120)
+        })
+        await new Promise((r) => setTimeout(r, 900))
+        const hasContent = !!document.querySelector('.main-card') && document.querySelectorAll('.main-card *').length > 20
+        out[label] = clicked && hasContent
+      }
+      return out
+    })
+    const sceneOk = Object.values(scenes).every(Boolean)
+    record('六个场景均可切换并渲染内容', sceneOk, JSON.stringify(scenes))
+
+    // 6.2 原生视图可见性回归：非视频/浏览场景必须隐藏平台视图
+    //     （v0.3 修复的缺陷：视图带着旧 bounds 浮在其它场景上面）
+    const visibility = await win.evaluate(async () => {
+      const setScene = async (label) => {
+        await new Promise((resolve) => {
+          const btn = Array.from(document.querySelectorAll('[data-scene]')).find(
+            (b) => (b.textContent || '').trim() === label
+          )
+          btn?.click()
+          setTimeout(resolve, 900)
+        })
+      }
+      const state = async () => {
+        const r = await window.coursehub.diagnostics.viewState()
+        if (!r.ok) return null
+        const tb = (r.data.browsers || []).find(
+          (b) => b.platformId === 'testbed'
+        )
+        return tb?.bounds?.visible ?? null
+      }
+
+      await setScene('平台浏览')
+      const onBrowser = await state()
+      await setScene('视频课堂')
+      const onVideo = await state()
+      await setScene('定位测试')
+      const onGeo = await state()
+      await setScene('AI 助手')
+      const onAi = await state()
+      return { onBrowser, onVideo, onGeo, onAi }
+    })
+    record(
+      '原生视图可见性：仅视频/浏览场景显示，其它场景隐藏',
+      visibility.onBrowser === true &&
+        visibility.onVideo === true &&
+        visibility.onGeo === false &&
+        visibility.onAi === false,
+      JSON.stringify(visibility)
+    )
+
+    // 6.3 测试台 fixture 可通过 IPC 加载，且 URL 落在 fixtures 目录内
+    const fixture = await win.evaluate(async () => {
+      const r = await window.coursehub.testbed.loadFixture('classroom-questions.html')
+      if (!r.ok) return { ok: false, error: r.error }
+      return { ok: true, url: r.data.url, fixture: r.data.fixture }
+    })
+    record(
+      '测试台可加载授权 fixture 页',
+      fixture.ok === true && /tests[\\/]fixtures[\\/]classroom-questions\.html$/.test(fixture.url ?? ''),
+      JSON.stringify(fixture)
+    )
+
+    // 6.4 fixture 文件名注入必须被拒绝
+    const injection = await win.evaluate(async () => {
+      const bad = ['../../package.json', 'a/../../b.html', 'x.exe', 'a b.html', '']
+      const results = []
+      for (const name of bad) {
+        const r = await window.coursehub.testbed.loadFixture(name)
+        results.push(r.ok ? 'ACCEPTED' : r.error.code)
+      }
+      return results
+    })
+    record(
+      '安全：fixture 文件名注入被全部拒绝',
+      injection.every((c) => c !== 'ACCEPTED'),
+      JSON.stringify(injection)
+    )
+
+    /* ---------------------------------------------------------------- */
+    /* 7. 安全边界                                                        */
     /* ---------------------------------------------------------------- */
     const security = await win.evaluate(async () => {
       const bad = []

@@ -72,7 +72,24 @@ Windows x64 桌面应用，课堂交互与学习任务**测试**工作台。
 npx vitest run                                          # 116/116
 npx tsc --noEmit -p tsconfig.node.json                  # 0 error
 npx tsc --noEmit -p tsconfig.web.json                   # 0 error
-unset ELECTRON_RUN_AS_NODE && node tests/e2e/run-e2e.mjs   # 16/16
+unset ELECTRON_RUN_AS_NODE && node tests/e2e/run-e2e.mjs   # 20/20
+unset ELECTRON_RUN_AS_NODE && node tests/e2e/capture-screen.mjs  # OS 级截图
 ```
 
-完整验收记录见 `docs/验收记录.md`（含未验证项清单与下一步建议）。
+完整验收记录见 `docs/验收记录.md`（v0.2）与 `docs/验收记录-v0.3.md`（UI 重构）。
+
+## UI 设计系统（v0.3 起，基准 = D:/Downloads/coursehub_desktop.tsx）
+
+浅色 Material 3，设计令牌集中在 `src/renderer/src/styles/index.css`：
+`--ch-page #f0f4f9` / `--ch-surface #fff` / `--ch-accent #0b57d0` /
+`--ch-accent-tint #e8f0fe` / `--ch-text #1f1f1f` / `--ch-text-2 #444746` /
+`--ch-border #e2e8f0` / 卡片 24px、模态 28px、内块 16px / 播放器 `--ch-player #0f172a`。
+深色主题用同一套令牌换值（`[data-theme='dark']`），不另写组件。
+**改 UI 前先读原型 TSX，不要凭记忆调色。**
+
+## 原生视图管理（易错，v0.3 踩过）
+
+- WebContentsView **不受 React z-index 约束**，不用时必须 `setVisible(false)` 移除，
+  否则带着旧 bounds 浮在其它场景上
+- 切场景要确保视图已创建（`platform.open`），否则区域全白
+- 想截图证明原生视图渲染，**只能用 OS 级屏幕捕获**，Playwright/Electron 截图都不含它

@@ -1,0 +1,119 @@
+{
+  "probe": {
+    "rootTheme": "light",
+    "topbar": {
+      "height": "56px",
+      "display": "flex",
+      "align-items": "center"
+    },
+    "platformNav": {
+      "border-radius": "999px",
+      "padding": "4px",
+      "background-color": "color(srgb 0.882353 0.901961 0.937255 / 0.7)"
+    },
+    "mainCard": {
+      "border-radius": "24px",
+      "background-color": "rgb(255, 255, 255)",
+      "box-shadow": "rgba(15, 23, 42, 0.07) 0px 1px 3px 0px"
+    },
+    "sceneNav": {
+      "border-radius": "999px",
+      "background-color": "rgb(240, 244, 249)"
+    },
+    "tokens": {
+      "accent": "#0b57d0",
+      "page": "#f0f4f9",
+      "surface": "#fff",
+      "text": "#1f1f1f",
+      "text2": "#444746",
+      "border": "#e2e8f0",
+      "rCard": "24px"
+    },
+    "drawerPresent": true,
+    "platformCount": 4,
+    "sceneCount": 6
+  },
+  "shots": [
+    {
+      "id": "dashboard",
+      "bytes": 356704,
+      "size": {
+        "width": 2854,
+        "height": 1730
+      }
+    },
+    {
+      "id": "video",
+      "bytes": 356699,
+      "size": {
+        "width": 2854,
+        "height": 1730
+      }
+    },
+    {
+      "id": "quiz",
+      "bytes": 318671,
+      "size": {
+        "width": 2854,
+        "height": 1730
+      }
+    },
+    {
+      "id": "signin",
+      "bytes": 379570,
+      "size": {
+        "width": 2854,
+        "height": 1730
+      }
+    },
+    {
+      "id": "geo",
+      "bytes": 404208,
+      "size": {
+        "width": 2854,
+        "height": 1730
+      }
+    },
+    {
+      "id": "ai",
+      "bytes": 327561,
+      "size": {
+        "width": 2854,
+        "height": 1730
+      }
+    },
+    {
+      "id": "browser",
+      "bytes": 254503,
+      "size": {
+        "width": 2854,
+        "height": 1730
+      }
+    },
+    {
+      "id": "settings",
+      "bytes": 335815,
+      "size": {
+        "width": 2854,
+        "height": 1730
+      }
+    },
+    {
+      "id": "settings-dark",
+      "bytes": 338774,
+      "size": {
+        "width": 2854,
+        "height": 1730
+      }
+    },
+    {
+      "id": "settings-nodrawer",
+      "bytes": 210315,
+      "size": {
+        "width": 2854,
+        "height": 1730
+      }
+    }
+  ],
+  "capturedAt": "2026-10-15T04:38:51.457Z"
+}

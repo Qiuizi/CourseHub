@@ -7,6 +7,7 @@
 
 import { app, BrowserWindow, ipcMain } from 'electron'
 import path from 'node:path'
+import fs from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import type {
   AIResult,
@@ -20,7 +21,7 @@ import { ok, toErrorResult, CodedError } from '@shared/ipc'
 import { isAllowedRate } from '@shared/video'
 import { validateGeoPoint } from '@shared/geo'
 import { getAdapter } from '../adapters'
-import { PLATFORM_CONFIGS, PlatformBrowser, isOriginAllowed } from '../browser/platform-browser'
+import { PLATFORM_CONFIGS, PlatformBrowser, isOriginAllowed, fixturesDir } from '../browser/platform-browser'
 import { GeoTestManager } from '../geo-test/geo-test-manager'
 import { PlayerObserver, commandPlayer } from '../video/player-observer'
 import { DeepSeekClient } from '../ai/deepseek-client'
@@ -110,7 +111,8 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
   })
 
   handle('platform:open', async (_e, payload) => {
-    const id = platformId((payload as { platformId?: unknown })?.platformId)
+    const p = payload as { platformId?: unknown; fixture?: unknown }
+    const id = platformId(p?.platformId)
     const win = deps.getWindow()
     if (!win) throw new CodedError('INVALID_REQUEST', '主窗口不存在')
     let browser = deps.browsers.get(id)
@@ -119,8 +121,44 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
       deps.browsers.set(id, browser)
     }
     browser.attach(win)
+
+    // 自有测试站点：加载随包分发的本地 fixture（文件名校验，防路径穿越）
+    if (id === 'testbed') {
+      const name = typeof p?.fixture === 'string' ? p.fixture : 'video-task.html'
+      if (!/^[a-z0-9-]+\.html$/i.test(name)) {
+        throw new CodedError('INVALID_REQUEST', 'fixture 文件名非法')
+      }
+      const cfg = PLATFORM_CONFIGS.find((c) => c.id === id)!
+      cfg.homeUrl = pathToFileURL(path.join(fixturesDir(), name)).href
+      const res = await browser.navigate(cfg.homeUrl)
+      if (!res.ok) throw new CodedError('UNSUPPORTED', res.error ?? '导航失败')
+      return { platformId: id, url: browser.currentUrl }
+    }
+
     await browser.loadHome()
     return { platformId: id, url: browser.currentUrl }
+  })
+
+  /** 测试台专用：切换到指定 fixture 页。 */
+  handle('testbed:load-fixture', async (_e, payload) => {
+    const p = payload as { fixture?: unknown }
+    const name = str(p?.fixture, 'fixture', 64)
+    if (!/^[a-z0-9-]+\.html$/i.test(name)) {
+      throw new CodedError('INVALID_REQUEST', 'fixture 文件名非法')
+    }
+    const win = deps.getWindow()
+    if (!win) throw new CodedError('INVALID_REQUEST', '主窗口不存在')
+    let browser = deps.browsers.get('testbed')
+    if (!browser) {
+      browser = PlatformBrowser.create('testbed')
+      deps.browsers.set('testbed', browser)
+    }
+    browser.attach(win)
+    const url = pathToFileURL(path.join(fixturesDir(), name)).href
+    const res = await browser.navigate(url)
+    if (!res.ok) throw new CodedError('UNSUPPORTED', res.error ?? '导航失败')
+    await deps.store.log('info', 'testbed_fixture_loaded', { fixture: name })
+    return { url: browser.currentUrl, fixture: name }
   })
 
   handle('browser:navigate', async (_e, payload) => {
@@ -172,7 +210,7 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     const id = platformId(p?.platformId)
     const url = str(p?.url, 'url', 2048)
     const cfg = PLATFORM_CONFIGS.find((c) => c.id === id)!
-    if (!isOriginAllowed(url, cfg.allowedOrigins)) {
+    if (!isOriginAllowed(url, cfg.allowedOrigins, cfg.allowFileProtocol)) {
       throw new CodedError('UNSUPPORTED', '该 URL 不在平台白名单内')
     }
     deps.browsers.get(id)?.openExternal(url)
@@ -306,6 +344,14 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     if (!p) throw new CodedError('INVALID_REQUEST', '缺少 bounds')
     deps.geo.setBounds(p.x, p.y, p.width, p.height)
     return { applied: true }
+  })
+
+  /** 场景切换时控制定位测试视图的可见性，避免它浮在其它场景上。 */
+  handle('geo-test:set-active', async (_e, payload) => {
+    const p = payload as { active?: unknown }
+    if (typeof p?.active !== 'boolean') throw new CodedError('INVALID_REQUEST', 'active 必须是布尔')
+    deps.geo.setActive(p.active)
+    return { active: p.active }
   })
 
   /* --------------------------------- AI --------------------------------- */
@@ -452,6 +498,56 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     for (const [k, v] of Object.entries(next)) if (allowed.has(k)) filtered[k] = v
     await deps.store.writeJson('settings.json', filtered)
     return filtered
+  })
+
+  /* ------------------------------ 诊断 ------------------------------ */
+
+  /** 仅供开发诊断：报告各平台视图的真实挂载/加载/bounds 状态。 */
+  handle('debug:view-state', async () => {
+    const list: unknown[] = []
+    for (const [id, b] of deps.browsers) {
+      const wc = b.webContents
+      list.push({
+        platformId: id,
+        hasView: !!b.webContents,
+        url: b.currentUrl,
+        loading: wc ? wc.isLoading() : null,
+        destroyed: wc ? wc.isDestroyed() : null,
+        bounds: b.debugBounds()
+      })
+    }
+    return { browsers: list, count: deps.browsers.size }
+  })
+
+  /** 仅供开发诊断：捕获平台视图当前画面，判断页面是否真的在渲染。 */
+  handle('debug:capture', async (_e, payload) => {
+    const p = payload as { platformId?: unknown }
+    const id = platformId(p?.platformId)
+    const b = deps.browsers.get(id)
+    const wc = b?.webContents
+    if (!wc) throw new CodedError('NOT_FOUND', '视图未打开')
+    const img = await wc.capturePage()
+    const png = img.toPNG()
+    const out = path.join(app.getPath('temp'), `coursehub-diag-${id}.png`)
+    await fs.writeFile(out, png)
+    return { path: out, bytes: png.length, size: img.getSize() }
+  })
+
+  /**
+   * 仅供开发诊断：捕获**整个窗口**画面。
+   * Playwright 的 win.screenshot() 只截 renderer 的 web 内容，
+   * 不含原生 WebContentsView；必须用主进程的 win.capturePage() 才能拿到完整视觉证据。
+   */
+  handle('debug:capture-window', async (_e, payload) => {
+    const p = payload as { name?: unknown }
+    const win = deps.getWindow()
+    if (!win) throw new CodedError('NOT_FOUND', '主窗口不存在')
+    const name = typeof p?.name === 'string' && /^[a-z0-9-]+$/i.test(p.name) ? p.name : 'window'
+    const img = await win.capturePage()
+    const png = img.toPNG()
+    const out = path.join(app.getPath('temp'), `coursehub-win-${name}.png`)
+    await fs.writeFile(out, png)
+    return { path: out, bytes: png.length, size: img.getSize() }
   })
 
   handle('diagnostics:export', async () => {

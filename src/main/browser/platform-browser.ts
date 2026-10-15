@@ -16,15 +16,23 @@ import type { Bounds, PlatformId } from '@shared/types'
 export interface PlatformConfig {
   id: PlatformId
   name: string
+  shortName: string
   /** 允许的 origin 白名单。导航目标必须命中其一。 */
   allowedOrigins: readonly string[]
   homeUrl: string
+  /**
+   * 是否允许 file:// 协议。仅「自有测试站点」开启，
+   * 用于加载随包分发的本地 fixture（视频/题目/定位回显页）。
+   * 生产平台一律关闭。
+   */
+  allowFileProtocol?: boolean
 }
 
 export const PLATFORM_CONFIGS: readonly PlatformConfig[] = [
   {
     id: 'chaoxing',
     name: '超星学习通',
+    shortName: '学习通',
     allowedOrigins: [
       'https://passport2.chaoxing.com',
       'https://mooc1-api.chaoxing.com',
@@ -37,6 +45,7 @@ export const PLATFORM_CONFIGS: readonly PlatformConfig[] = [
   {
     id: 'yuketang',
     name: '雨课堂',
+    shortName: '雨课堂',
     allowedOrigins: [
       'https://www.yuketang.cn',
       'https://yuketang.cn',
@@ -48,9 +57,20 @@ export const PLATFORM_CONFIGS: readonly PlatformConfig[] = [
   {
     id: 'zhihuishu',
     name: '智慧树',
+    shortName: '智慧树',
     // 首版仅提供浏览入口；未取得真实样例前不声称签到/视频适配
     allowedOrigins: ['https://www.zhihuishu.com', 'https://zhihuishu.com'],
     homeUrl: 'https://www.zhihuishu.com/'
+  },
+  {
+    // 自有测试站点（开发文档 §2.2）：独立会话 + 本地 fixture，
+    // 用于可重复地验证播放器观测、题目交互与定位覆盖。
+    id: 'testbed',
+    name: '测试台',
+    shortName: '测试台',
+    allowedOrigins: [],
+    allowFileProtocol: true,
+    homeUrl: ''
   }
 ]
 
@@ -61,13 +81,31 @@ export function sessionNameFor(platformId: PlatformId): string {
   return `persist:coursehub-${platformId}`
 }
 
-export function isOriginAllowed(url: string, allowed: readonly string[]): boolean {
+/**
+ * origin 白名单校验。
+ *
+ * - 生产平台：只允许 http(s)，且 hostname 必须在白名单内（含子域）。
+ * - 自有测试站点（allowFileProtocol）：额外允许 file://，
+ *   且**只允许指向随包分发的 fixtures 目录**，不允许任意本地路径。
+ */
+export function isOriginAllowed(
+  url: string,
+  allowed: readonly string[],
+  allowFile = false
+): boolean {
   let parsed: URL
   try {
     parsed = new URL(url)
   } catch {
     return false
   }
+
+  if (allowFile && parsed.protocol === 'file:') {
+    // 只放行 fixtures 目录内的文件，避免变成任意本地文件读取器
+    const p = decodeURIComponent(parsed.pathname).replace(/\\/g, '/').toLowerCase()
+    return p.includes('/tests/fixtures/') || p.includes('/resources/fixtures/')
+  }
+
   // 只允许 http(s)，拒绝 file:、javascript:、data: 等任意协议
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false
   return allowed.some((origin) => {
@@ -134,15 +172,17 @@ export class PlatformBrowser {
 
     // 导航限制：只允许白名单 origin
     wc.on('will-navigate', (event, url) => {
-      if (!isOriginAllowed(url, this.config.allowedOrigins)) event.preventDefault()
+      if (!isOriginAllowed(url, this.config.allowedOrigins, this.config.allowFileProtocol))
+        event.preventDefault()
     })
     wc.on('will-redirect', (event, url) => {
-      if (!isOriginAllowed(url, this.config.allowedOrigins)) event.preventDefault()
+      if (!isOriginAllowed(url, this.config.allowedOrigins, this.config.allowFileProtocol))
+        event.preventDefault()
     })
 
     // 弹窗一律拒绝；白名单内的 http(s) 在当前视图内导航
     wc.setWindowOpenHandler(({ url }) => {
-      if (isOriginAllowed(url, this.config.allowedOrigins)) {
+      if (isOriginAllowed(url, this.config.allowedOrigins, this.config.allowFileProtocol)) {
         void wc.loadURL(url).catch(() => undefined)
       }
       return { action: 'deny' }
@@ -201,7 +241,7 @@ export class PlatformBrowser {
   }
 
   async navigate(url: string): Promise<{ ok: boolean; error?: string }> {
-    if (!isOriginAllowed(url, this.config.allowedOrigins)) {
+    if (!isOriginAllowed(url, this.config.allowedOrigins, this.config.allowFileProtocol)) {
       return { ok: false, error: `UNSUPPORTED: 目标 origin 不在 ${this.config.name} 白名单内` }
     }
     const view = this.ensureView()
@@ -238,6 +278,16 @@ export class PlatformBrowser {
     return wc.getURL() || null
   }
 
+  /** 开发诊断：视图当前 bounds 与可见性。 */
+  debugBounds(): { bounds: Electron.Rectangle | null; visible: boolean; attached: boolean } {
+    if (!this.view) return { bounds: null, visible: false, attached: this.attached }
+    return {
+      bounds: this.view.getBounds(),
+      visible: this.view.getVisible(),
+      attached: this.attached
+    }
+  }
+
   get webContents(): Electron.WebContents | null {
     if (!this.view || this.view.webContents.isDestroyed()) return null
     return this.view.webContents
@@ -245,7 +295,9 @@ export class PlatformBrowser {
 
   /** 只有白名单内的 http(s) 才允许用系统浏览器打开。 */
   openExternal(url: string): boolean {
-    if (!isOriginAllowed(url, this.config.allowedOrigins)) return false
+    // file:// 不交给系统浏览器，避免把本地 fixture 变成外部可打开文件
+    if (this.config.allowFileProtocol && url.startsWith('file:')) return false
+    if (!isOriginAllowed(url, this.config.allowedOrigins, this.config.allowFileProtocol)) return false
     void shell.openExternal(url)
     return true
   }

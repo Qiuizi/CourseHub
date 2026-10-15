@@ -21,7 +21,8 @@
     "dist:win": "npm run build && electron-builder --win --x64 --config electron-builder.yml"
   },
   "dependencies": {
-    "leaflet": "1.9.4"
+    "leaflet": "1.9.4",
+    "lucide-react": "0.544.0"
   },
   "devDependencies": {
     "@playwright/test": "1.64.1",

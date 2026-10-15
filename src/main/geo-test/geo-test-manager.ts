@@ -83,6 +83,28 @@ export class GeoTestManager {
     })
   }
 
+  /**
+   * 场景不可见时移除视图。
+   * WebContentsView 不受 React z-index 约束，不主动移除就会带着旧 bounds
+   * 浮在其它场景上面（v0.3 实测到的缺陷）。
+   */
+  setActive(active: boolean): void {
+    if (!this.view || this.view.webContents.isDestroyed() || !this.win) return
+    if (!active) {
+      if (this.attached) {
+        this.win.contentView.removeChildView(this.view)
+        this.attached = false
+      }
+      this.view.setVisible(false)
+    } else if (this.current && this.current.status !== 'idle') {
+      if (!this.attached) {
+        this.win.contentView.addChildView(this.view)
+        this.attached = true
+      }
+      this.view.setVisible(true)
+    }
+  }
+
   hide(): void {
     if (!this.view || this.view.webContents.isDestroyed() || !this.win) return
     if (this.attached) {

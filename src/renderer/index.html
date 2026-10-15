@@ -1,10 +1,17 @@
 <!doctype html>
-<html lang="zh-CN" class="dark">
+<html lang="zh-CN" data-theme="light">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      CSP 说明：
+      - 默认只允许自身来源，脚本/样式不放开。
+      - img-src 额外放行 tile.openstreetmap.org：Leaflet 地图瓦片必须外网加载，
+        且 OSM 使用政策要求保留 attribution（已在 GeoScene 中设置）。
+      - 未放行 connect-src 到任意域：DeepSeek 请求在主进程发起，不走 renderer。
+    -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://tile.openstreetmap.org https://*.tile.openstreetmap.org; font-src 'self' data:; connect-src 'self' https://tile.openstreetmap.org https://*.tile.openstreetmap.org;"
     />
     <title>CourseHub</title>
   </head>

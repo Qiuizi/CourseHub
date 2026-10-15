@@ -27,12 +27,12 @@ if (!gotLock) {
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
-    width: 1440,
-    height: 900,
+    width: 1600,
+    height: 1000,
     minWidth: 1100,
     minHeight: 700,
     show: false,
-    backgroundColor: '#0b0f19',
+    backgroundColor: '#f0f4f9',
     autoHideMenuBar: true,
     title: 'CourseHub',
     webPreferences: {

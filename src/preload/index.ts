@@ -37,7 +37,12 @@ const api = {
         'platform:auth',
         { platformId }
       ),
-    open: (platformId: PlatformId) => invoke<{ url: string | null }>('platform:open', { platformId })
+    open: (input: { platformId: PlatformId; fixture?: string }) =>
+      invoke<{ platformId: PlatformId; url: string | null }>('platform:open', input)
+  },
+  testbed: {
+    loadFixture: (fixture: string) =>
+      invoke<{ url: string | null; fixture: string }>('testbed:load-fixture', { fixture })
   },
   browser: {
     navigate: (platformId: PlatformId, url: string) =>
@@ -71,7 +76,8 @@ const api = {
     configure: (config: GeoTestConfig) => invoke<{ valid: boolean }>('geo-test:configure', { config }),
     start: (config: GeoTestConfig) => invoke<GeoTestRun>('geo-test:start', { config }),
     stop: () => invoke<GeoTestRun>('geo-test:stop'),
-    setBounds: (bounds: Bounds) => invoke<{ applied: boolean }>('geo-test:set-bounds', bounds)
+    setBounds: (bounds: Bounds) => invoke<{ applied: boolean }>('geo-test:set-bounds', bounds),
+    setActive: (active: boolean) => invoke<{ active: boolean }>('geo-test:set-active', { active })
   },
   ai: {
     setKey: (key: string) => invoke<{ stored: boolean }>('ai:key:set', { key }),
@@ -123,7 +129,18 @@ const api = {
     update: (patch: Record<string, unknown>) => invoke<Record<string, unknown>>('settings:update', patch)
   },
   diagnostics: {
-    export: () => invoke<{ exported: boolean; path: string; note: string }>('diagnostics:export')
+    export: () => invoke<{ exported: boolean; path: string; note: string }>('diagnostics:export'),
+    viewState: () => invoke<{ browsers: unknown[]; count: number }>('debug:view-state'),
+    capture: (platformId: PlatformId) =>
+      invoke<{ path: string; bytes: number; size: { width: number; height: number } }>(
+        'debug:capture',
+        { platformId }
+      ),
+    captureWindow: (name: string) =>
+      invoke<{ path: string; bytes: number; size: { width: number; height: number } }>(
+        'debug:capture-window',
+        { name }
+      )
   },
   events: {
     onVideoObservation: (cb: (obs: PlaybackObservation) => void): (() => void) => {
