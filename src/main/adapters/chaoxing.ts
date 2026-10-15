@@ -174,3 +174,138 @@ export function parseActiveListResponse(
 
   return { ok: true, activities: items }
 }
+
+import type { SignInEvent } from '@shared/types'
+
+export interface SessionLike {
+  cookies: {
+    get: (filter: { domain?: string }) => Promise<Array<{ name: string; value: string }>>
+  }
+  fetch: (input: any, init?: any) => Promise<any>
+}
+
+/** 探测学习通 Session 登录状态（通过读取 Cookie 及尝试拉取课程） */
+export async function detectChaoxingAuth(ses: SessionLike): Promise<{
+  state: 'unauthenticated' | 'authenticated' | 'expired' | 'error'
+  evidence: string | null
+}> {
+  try {
+    const cookies = await ses.cookies.get({ domain: 'chaoxing.com' }).catch(() => [])
+    const passportCookies = await ses.cookies.get({ domain: 'passport2.chaoxing.com' }).catch(() => [])
+    const all = [...cookies, ...passportCookies]
+    const hasAuthCookie = all.some((c) =>
+      ['_uid', 'UID', 'vc3', 'k8s', 'fid', 'cx_rt'].some((k) => c.name.toLowerCase().includes(k.toLowerCase()))
+    )
+    if (!hasAuthCookie && all.length === 0) {
+      return { state: 'unauthenticated', evidence: '未在内置浏览器中检测到学习通登录 Cookie' }
+    }
+
+    const req = buildCourseListRequest()
+    const resp = await ses.fetch(req.url, { method: req.method, headers: req.headers })
+    if (resp.status === 401 || resp.status === 403) {
+      return { state: 'expired', evidence: '学习通登录凭证已失效（HTTP 401/403）' }
+    }
+    const json = (await resp.json().catch(() => null)) as unknown
+    const parsed = parseCourseListResponse(json)
+    if (!parsed.ok) {
+      if (parsed.error?.includes('AUTH_EXPIRED')) {
+        return { state: 'expired', evidence: '学习通登录会话已过期，需要重新登录' }
+      }
+      return { state: 'unauthenticated', evidence: parsed.error ?? '无法验证身份' }
+    }
+    return {
+      state: 'authenticated',
+      evidence: `已成功认证，读取到 ${parsed.courses.length} 门在读课程`
+    }
+  } catch (e) {
+    return { state: 'error', evidence: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/** 通过 Session 拉取学习通课程列表 */
+export async function fetchChaoxingCourses(ses: SessionLike): Promise<{
+  ok: boolean
+  state: 'supported' | 'unauthenticated' | 'expired' | 'error'
+  courses: ChaoxingCourse[]
+  error?: string
+}> {
+  const auth = await detectChaoxingAuth(ses)
+  if (auth.state !== 'authenticated') {
+    return { ok: false, state: auth.state, courses: [], error: auth.evidence ?? '未登录' }
+  }
+
+  const req = buildCourseListRequest()
+  const resp = await ses.fetch(req.url, { method: req.method, headers: req.headers })
+  const json = (await resp.json().catch(() => null)) as unknown
+  const parsed = parseCourseListResponse(json)
+  return {
+    ok: parsed.ok,
+    state: parsed.ok ? 'supported' : 'error',
+    courses: parsed.courses,
+    error: parsed.error
+  }
+}
+
+/** 通过 Session 拉取学习通今日签到活动 */
+export async function fetchChaoxingSignIns(ses: SessionLike): Promise<{
+  state: 'supported' | 'unauthenticated' | 'expired' | 'unverified' | 'error'
+  events: SignInEvent[]
+  fetchedAt: string
+  reason: string | null
+}> {
+  const courseRes = await fetchChaoxingCourses(ses)
+  if (!courseRes.ok) {
+    return {
+      state: courseRes.state,
+      events: [],
+      fetchedAt: new Date().toISOString(),
+      reason: courseRes.error ?? '无法拉取课程'
+    }
+  }
+
+  const events: SignInEvent[] = []
+  // 针对前 6 门有效课程并行查询签到活动
+  const targetCourses = courseRes.courses.slice(0, 6)
+  await Promise.all(
+    targetCourses.map(async (course) => {
+      try {
+        const req = buildActiveListRequest(course.courseId, course.classId)
+        const resp = await ses.fetch(req.url, { method: req.method })
+        if (!resp.ok) return
+        const json = (await resp.json().catch(() => null)) as unknown
+        const parsed = parseActiveListResponse(json, course.courseId, course.classId)
+        if (!parsed.ok) return
+
+        for (const act of parsed.activities) {
+          if (act.isSignIn) {
+            events.push({
+              id: `cx-${act.id}`,
+              platformId: 'chaoxing',
+              courseId: course.courseId,
+              kind: 'normal',
+              title: `${course.name} · ${act.title}`,
+              startAt: new Date().toISOString(),
+              endAt: null,
+              sourceUrl: `https://mobilelearn.chaoxing.com/v2/apis/active/getPPTActiveInfo?activeId=${act.id}`,
+              fetchedAt: new Date().toISOString(),
+              status: act.status === 1 ? 'open' : 'closed',
+              statusSource: 'provider_api',
+              locationText: null,
+              locationRequired: false
+            })
+          }
+        }
+      } catch {
+        // 单个课程异常不阻断其它课程查询
+      }
+    })
+  )
+
+  return {
+    state: 'supported',
+    events,
+    fetchedAt: new Date().toISOString(),
+    reason: events.length === 0 ? '当前在读课程无进行中的签到活动' : null
+  }
+}
+

@@ -68,7 +68,7 @@ export const PLATFORM_CONFIGS: readonly PlatformConfig[] = [
     id: 'testbed',
     name: '测试台',
     shortName: '测试台',
-    allowedOrigins: [],
+    allowedOrigins: ['http://127.0.0.1', 'http://localhost'],
     allowFileProtocol: true,
     homeUrl: ''
   }

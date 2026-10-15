@@ -106,6 +106,29 @@ export function SignInScene({ platformId, platformName, onOpenPlatform }: SignIn
             <AlertCircle size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: -1 }} />
             读取失败：{data.reason}
           </Notice>
+        ) : data?.state === 'unauthenticated' ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <Empty
+              icon={<CalendarClock size={22} />}
+              text={`未在内置浏览器中检测到 ${platformName} 登录会话。`}
+            />
+            <div style={{ display: 'flex', justifyContent: 'center' }}>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={onOpenPlatform}
+                data-testid="signin-login-btn"
+              >
+                <ExternalLink size={13} />
+                前往「平台浏览」登录 {platformName}
+              </button>
+            </div>
+            <Notice tone="info">
+              CourseHub 遵循安全设计原则：不要求您在聊天或外部输入密码，
+              而是直接复用您在内置独立 Session 中安全完成的平台登录态。
+              {data.reason ? `（${data.reason}）` : ''}
+            </Notice>
+          </div>
         ) : data?.state === 'unverified' ? (
           <>
             <Empty
@@ -148,21 +171,34 @@ export function SignInScene({ platformId, platformName, onOpenPlatform }: SignIn
                 </div>
 
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    style={{ fontSize: 11 }}
-                    onClick={() => handleTrigger(ev.id)}
-                    disabled={triggeringId === ev.id}
-                  >
-                    {triggeringId === ev.id ? '正在打卡…' : '执行测试打卡'}
-                  </button>
+                  {platformId === 'testbed' ? (
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      style={{ fontSize: 11 }}
+                      onClick={() => handleTrigger(ev.id)}
+                      disabled={triggeringId === ev.id}
+                    >
+                      {triggeringId === ev.id ? '正在打卡…' : '执行测试打卡'}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn"
+                      style={{ fontSize: 11 }}
+                      onClick={() => {
+                        onOpenPlatform()
+                      }}
+                    >
+                      <ExternalLink size={11} /> 打开活动页面
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
           </div>
         ) : (
-          <Empty text="当前没有签到数据。" />
+          <Empty text="当前没有进行中的签到活动。" />
         )}
 
         {stale && (

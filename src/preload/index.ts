@@ -52,7 +52,11 @@ const api = {
       invoke<{ ok: boolean; status: string; message: string; state: unknown }>('testbed:trigger-signin', {
         signinId,
         coords
-      })
+      }),
+    serverInfo: () =>
+      invoke<{ url: string | null; port: number }>('testbed:server-info'),
+    resetServer: () =>
+      invoke<{ reset: boolean }>('testbed:server-reset')
   },
   browser: {
     navigate: (platformId: PlatformId, url: string) =>
@@ -71,7 +75,11 @@ const api = {
       invoke<{ state: string; events: unknown[]; fetchedAt: string | null; reason: string | null }>(
         'classroom:today-signins',
         { platformId }
-      )
+      ),
+    auth: (platformId: PlatformId) =>
+      invoke<{ state: string; evidence: string | null }>('platform:auth', { platformId }),
+    courses: (platformId: PlatformId) =>
+      invoke<{ state: string; courses: unknown[]; error?: string }>('platform:courses', { platformId })
   },
   video: {
     list: (platformId: PlatformId) =>

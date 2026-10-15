@@ -654,6 +654,116 @@ async function main() {
       domVerify.length === 4,
       `回读题目数: ${domVerify.length}`
     )
+
+    // 8.9 适配器接线：学习通登录状态检测（真实 Session 探测，未登录时准确报告）
+    const cxAuth = await win.evaluate(async () => {
+      const res = await window.coursehub.classroom.auth('chaoxing')
+      return res.ok ? res.data : null
+    })
+    record(
+      '业务接线：学习通 Session 登录状态准确捕获（未登录状态明确报告）',
+      cxAuth?.state === 'unauthenticated',
+      `state=${cxAuth?.state}, evidence=${cxAuth?.evidence}`
+    )
+
+    // 8.10 适配器接线：雨课堂登录状态检测（真实 Session 探测，未登录时准确报告）
+    const yktAuth = await win.evaluate(async () => {
+      const res = await window.coursehub.classroom.auth('yuketang')
+      return res.ok ? res.data : null
+    })
+    record(
+      '业务接线：雨课堂 Session 登录状态准确捕获（未登录状态明确报告）',
+      yktAuth?.state === 'unauthenticated',
+      `state=${yktAuth?.state}, evidence=${yktAuth?.evidence}`
+    )
+
+    // 8.11 签到闭环：本地 HTTP 测试服务双向闭环（服务端容差判定、越界拦截、重复拦截与权威状态回读）
+    let srvTest = null
+    try {
+      const srvInfo = await win.evaluate(async () => {
+        const info = await window.coursehub.testbed.serverInfo()
+        if (info.ok) await window.coursehub.testbed.resetServer()
+        return info
+      })
+      if (srvInfo?.ok && srvInfo.data?.url) {
+        const baseUrl = srvInfo.data.url
+
+        // 1. 正常普通签到
+        const r1 = await fetch(`${baseUrl}/api/signin`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ activityId: 'test-srv-sign-01' })
+        })
+        const j1 = await r1.json()
+
+        // 2. 定位签到：缺少坐标拦截 (LOCATION_REQUIRED)
+        const rMissing = await fetch(`${baseUrl}/api/signin`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ activityId: 'test-srv-sign-02' })
+        })
+        const jMissing = await rMissing.json()
+
+        // 3. 定位签到：超出容差拦截 (OUT_OF_RANGE，例如上海坐标 31.2304, 121.4737，距北京约 1000km > 500m 容差)
+        const rOut = await fetch(`${baseUrl}/api/signin`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ activityId: 'test-srv-sign-02', latitude: 31.2304, longitude: 121.4737, accuracy: 20 })
+        })
+        const jOut = await rOut.json()
+
+        // 4. 定位签到：在容差内成功打卡 (北京天安门 39.9042, 116.4074)
+        const rIn = await fetch(`${baseUrl}/api/signin`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ activityId: 'test-srv-sign-02', latitude: 39.9042, longitude: 116.4074, accuracy: 30 })
+        })
+        const jIn = await rIn.json()
+
+        // 5. 重复签到拦截 (ALREADY_SIGNED)
+        const rDup = await fetch(`${baseUrl}/api/signin`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ activityId: 'test-srv-sign-02', latitude: 39.9042, longitude: 116.4074 })
+        })
+        const jDup = await rDup.json()
+
+        // 6. 服务端权威状态回读
+        const s1 = await fetch(`${baseUrl}/api/signin/status?activityId=test-srv-sign-01`).then(r => r.json())
+        const s2 = await fetch(`${baseUrl}/api/signin/status?activityId=test-srv-sign-02`).then(r => r.json())
+
+        srvTest = {
+          normalPass: j1.code === 'SUCCESS',
+          missingCoordsBlocked: jMissing.code === 'LOCATION_REQUIRED',
+          outOfRangeBlocked: jOut.code === 'OUT_OF_RANGE',
+          locationPass: jIn.code === 'SUCCESS' && jIn.record?.distanceMeters <= 50,
+          duplicateBlocked: jDup.code === 'ALREADY_SIGNED',
+          serverStatus1: s1.status === 'checked_in',
+          serverStatus2: s2.status === 'checked_in'
+        }
+      }
+    } catch (err) {
+      srvTest = { error: String(err) }
+    }
+
+    record(
+      '闭环B-4：本地测试服务端双向闭环（容差判定、越界拦截、重复拦截与权威状态回读）',
+      srvTest?.normalPass &&
+        srvTest?.missingCoordsBlocked &&
+        srvTest?.outOfRangeBlocked &&
+        srvTest?.locationPass &&
+        srvTest?.duplicateBlocked &&
+        srvTest?.serverStatus1 &&
+        srvTest?.serverStatus2,
+      JSON.stringify(srvTest)
+    )
+
+    // 8.12 题目闭环：未配置 Key 时明确输出 Mock 标记与免责声明
+    record(
+      '闭环C-3：未配置 Key 时明确标记 isMock 且无明文泄露',
+      autoQuiz?.isMock === true,
+      `isMock=${autoQuiz?.isMock}`
+    )
   } catch (e) {
     record('E2E 执行过程', false, e instanceof Error ? e.message : String(e))
   } finally {

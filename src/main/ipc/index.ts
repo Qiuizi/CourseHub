@@ -5,7 +5,7 @@
  * 远程平台页面拿不到任何 preload，因此不可能调用这些通道。
  */
 
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, session } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
@@ -21,7 +21,15 @@ import { ok, toErrorResult, CodedError } from '@shared/ipc'
 import { isAllowedRate } from '@shared/video'
 import { validateGeoPoint } from '@shared/geo'
 import { getAdapter } from '../adapters'
-import { PLATFORM_CONFIGS, PlatformBrowser, isOriginAllowed, fixturesDir } from '../browser/platform-browser'
+import {
+  PLATFORM_CONFIGS,
+  PlatformBrowser,
+  isOriginAllowed,
+  fixturesDir,
+  sessionNameFor,
+  testSession
+} from '../browser/platform-browser'
+import { TestbedServer } from '../testbed/testbed-server'
 import { GeoTestManager } from '../geo-test/geo-test-manager'
 import { PlayerObserver, commandPlayer } from '../video/player-observer'
 import { DeepSeekClient } from '../ai/deepseek-client'
@@ -68,6 +76,7 @@ export interface IpcDeps {
   getWindow: () => BrowserWindow | null
   browsers: Map<PlatformId, PlatformBrowser>
   geo: GeoTestManager
+  testbedServer?: TestbedServer
 }
 
 export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () => void } {
@@ -106,7 +115,14 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
   handle('platform:auth', async (_e, payload) => {
     const id = platformId((payload as { platformId?: unknown })?.platformId)
     const adapter = getAdapter(id)
-    const snapshot = await adapter!.detectAuth(new AbortController().signal)
+    if (!adapter) throw new CodedError('NOT_FOUND', `未知平台 ${id}`)
+    const b = deps.browsers.get(id)
+    const ses = b
+      ? b.getSession()
+      : id === 'testbed'
+        ? testSession()
+        : session.fromPartition(sessionNameFor(id))
+    const snapshot = await adapter.detectAuth(ses)
     return { platformId: id, ...snapshot, checkedAt: new Date().toISOString() }
   })
 
@@ -261,6 +277,15 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
       }
     }
 
+    if (id === 'chaoxing' || id === 'yuketang') {
+      const b = deps.browsers.get(id as PlatformId)
+      const ses = b ? b.getSession() : session.fromPartition(sessionNameFor(id as PlatformId))
+      const adapter = getAdapter(id as PlatformId)
+      if (adapter?.listTodaySignIns) {
+        return adapter.listTodaySignIns(ses)
+      }
+    }
+
     const cached = await deps.store.readJson<{ fetchedAt: string | null; events: unknown[] }>(
       'cache/signins.json',
       { fetchedAt: null, events: [] }
@@ -271,6 +296,38 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
       fetchedAt: cached.fetchedAt,
       reason: '平台适配器未在真实账号验证；本次交付不提供伪造签到数据'
     }
+  })
+
+  handle('platform:courses', async (_e, payload) => {
+    const p = payload as { platformId?: unknown }
+    const id = platformId(p?.platformId)
+    if (id === 'testbed') {
+      return {
+        state: 'supported',
+        courses: [
+          { courseId: 'test-course-01', classId: 'sec-01', name: '全栈自动化实战课（自有测试）' }
+        ]
+      }
+    }
+    const b = deps.browsers.get(id)
+    const ses = b ? b.getSession() : session.fromPartition(sessionNameFor(id))
+    const adapter = getAdapter(id)
+    if (!adapter?.listCourses) {
+      return { state: 'unsupported', courses: [], error: '平台暂不支持课程列表读取' }
+    }
+    return adapter.listCourses(ses)
+  })
+
+  handle('testbed:server-info', async () => {
+    return {
+      url: deps.testbedServer?.getUrl() ?? null,
+      port: deps.testbedServer?.getPort() ?? 0
+    }
+  })
+
+  handle('testbed:server-reset', async () => {
+    deps.testbedServer?.reset()
+    return { reset: true }
   })
 
   handle('testbed:trigger-signin', async (_e, payload) => {

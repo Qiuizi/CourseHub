@@ -37,6 +37,7 @@ export function QuizScene({ onAskAi, onGoExtract }: QuizSceneProps): ReactNode {
       explanation: string
     }>
   | null>(null)
+  const [isMockResult, setIsMockResult] = useState<boolean>(false)
 
   const extract = useCallback(async () => {
     setLoading(true)
@@ -61,7 +62,10 @@ export function QuizScene({ onAskAi, onGoExtract }: QuizSceneProps): ReactNode {
       const res = await window.coursehub.question.autoAnalyzeAndFill({ platformId: 'testbed' })
       if (res.ok) {
         setBatchReport(res.data.results as any)
-        setMsg(`自动化交互完成：共处理 ${res.data.totalProcessed} 道题目，页面表单已受控更新（${res.data.isMock ? '本地规范 Mock 分析' : 'DeepSeek 实时分析'}）。`)
+        setIsMockResult(Boolean(res.data.isMock))
+        setMsg(
+          `自动化交互完成：共处理 ${res.data.totalProcessed} 道题目，页面表单已受控更新（${res.data.isMock ? '规范化 Mock 模拟' : 'DeepSeek 实时分析'}）。`
+        )
       } else {
         setMsg(`自动化交互失败：${res.error.message}`)
       }
@@ -182,7 +186,28 @@ export function QuizScene({ onAskAi, onGoExtract }: QuizSceneProps): ReactNode {
       </Card>
 
       {batchReport && (
-        <Card title="测试自动化交互执行报告">
+        <Card
+          title="测试自动化交互执行报告"
+          action={
+            isMockResult ? (
+              <span className="chip" style={{ background: '#78350f', color: '#fef3c7' }} data-testid="mock-badge">
+                【模拟测试结果 · 未配置API Key】
+              </span>
+            ) : (
+              <span className="chip chip-emerald" data-testid="real-ai-badge">
+                【DeepSeek 实时分析结果】
+              </span>
+            )
+          }
+        >
+          {isMockResult && (
+            <div style={{ marginBottom: 12 }}>
+              <Notice tone="info">
+                当前运行在<strong>规范化模拟测试模式（Mock）</strong>，答案与解析依据本地测试规则生成，不产生实际 API 调用与计费。
+                若要启用真实 DeepSeek 模型分析，请在「设置」中输入您的 API Key。
+              </Notice>
+            </div>
+          )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {batchReport.map((r, idx) => (
               <div

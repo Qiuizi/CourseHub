@@ -11,12 +11,14 @@ import path from 'node:path'
 import type { PlatformId, GeoTestRun, PlaybackObservation } from '@shared/types'
 import { defaultStore, type Store } from './services/store'
 import { GeoTestManager } from './geo-test/geo-test-manager'
-import { PlatformBrowser } from './browser/platform-browser'
+import { PlatformBrowser, fixturesDir } from './browser/platform-browser'
+import { TestbedServer } from './testbed/testbed-server'
 import { registerIpc } from './ipc'
 
 let mainWindow: BrowserWindow | null = null
 let store: Store | null = null
 let geo: GeoTestManager | null = null
+let testbedServer: TestbedServer | null = null
 let ipcHandle: { dispose: () => void } | null = null
 const browsers = new Map<PlatformId, PlatformBrowser>()
 
@@ -87,11 +89,17 @@ function bootstrap(): void {
 
   mainWindow = createWindow()
 
+  testbedServer = new TestbedServer(fixturesDir())
+  void testbedServer.start().then((port) => {
+    void store?.log('info', 'testbed_server_started', { port })
+  })
+
   ipcHandle = registerIpc({
     store,
     getWindow: () => mainWindow,
     browsers,
-    geo
+    geo,
+    testbedServer
   })
 
   // 播放器观测推送到本地 UI
@@ -128,6 +136,8 @@ function cleanup(): void {
   for (const b of browsers.values()) b.destroy()
   browsers.clear()
   geo?.disposeSync()
+  void testbedServer?.stop()
+  testbedServer = null
 }
 
 app.on('window-all-closed', () => {

@@ -160,3 +160,140 @@ describe('YuketangAdapter 解析与请求构造', () => {
     expect(res2?.isKnown).toBe(false)
   })
 })
+
+import {
+  detectChaoxingAuth,
+  fetchChaoxingCourses,
+  fetchChaoxingSignIns,
+  type SessionLike
+} from '../../src/main/adapters/chaoxing'
+import {
+  detectYuketangAuth,
+  fetchYuketangCourses,
+  fetchYuketangSignIns
+} from '../../src/main/adapters/yuketang'
+
+describe('ChaoxingAdapter 与 YuketangAdapter 会话探测与业务接线', () => {
+  it('detectChaoxingAuth 无 Cookie 时返回 unauthenticated', async () => {
+    const mockSes: SessionLike = {
+      cookies: { get: async () => [] },
+      fetch: async () => new Response('{}')
+    }
+    const res = await detectChaoxingAuth(mockSes)
+    expect(res.state).toBe('unauthenticated')
+    expect(res.evidence).toContain('未在内置浏览器中检测到')
+  })
+
+  it('detectChaoxingAuth 会话过期时返回 expired', async () => {
+    const mockSes: SessionLike = {
+      cookies: { get: async () => [{ name: '_uid', value: '12345' }] },
+      fetch: async () => new Response(JSON.stringify({ result: 0, msg: '登录已超时' }))
+    }
+    const res = await detectChaoxingAuth(mockSes)
+    expect(res.state).toBe('expired')
+    expect(res.evidence).toContain('过期')
+  })
+
+  it('detectChaoxingAuth 凭证有效时返回 authenticated 并能拉取签到活动', async () => {
+    const mockSes: SessionLike = {
+      cookies: { get: async () => [{ name: '_uid', value: '12345' }, { name: 'vc3', value: 'token' }] },
+      fetch: async (url: string | URL) => {
+        const urlStr = String(url)
+        if (urlStr.includes('backclazzdata')) {
+          return new Response(
+            JSON.stringify({
+              result: 1,
+              channelList: [
+                {
+                  content: {
+                    course: {
+                      data: [{ id: 101, courseId: 'c-101', classId: 'cl-101', name: '软件工程' }]
+                    }
+                  }
+                }
+              ]
+            })
+          )
+        }
+        if (urlStr.includes('activelist')) {
+          return new Response(
+            JSON.stringify({
+              activeList: [
+                { id: 'act-901', nameOne: '课堂点名签到', activeType: 2, status: 1 }
+              ]
+            })
+          )
+        }
+        return new Response('{}')
+      }
+    }
+    const auth = await detectChaoxingAuth(mockSes)
+    expect(auth.state).toBe('authenticated')
+    expect(auth.evidence).toContain('1 门在读课程')
+
+    const courses = await fetchChaoxingCourses(mockSes)
+    expect(courses.ok).toBe(true)
+    expect(courses.courses).toHaveLength(1)
+
+    const signins = await fetchChaoxingSignIns(mockSes)
+    expect(signins.state).toBe('supported')
+    expect(signins.events).toHaveLength(1)
+    expect(signins.events[0]?.title).toBe('软件工程 · 课堂点名签到')
+    expect(signins.events[0]?.platformId).toBe('chaoxing')
+  })
+
+  it('detectYuketangAuth 无 Cookie 时返回 unauthenticated', async () => {
+    const mockSes: SessionLike = {
+      cookies: { get: async () => [] },
+      fetch: async () => new Response('{}')
+    }
+    const res = await detectYuketangAuth(mockSes)
+    expect(res.state).toBe('unauthenticated')
+  })
+
+  it('detectYuketangAuth 探测在课状态有效时返回 authenticated 并生成签到事件', async () => {
+    const mockSes: SessionLike = {
+      cookies: { get: async () => [{ name: 'sessionid', value: 'mock_sess' }] },
+      fetch: async (url: string | URL) => {
+        const urlStr = String(url)
+        if (urlStr.includes('on-lesson-upcoming-exam')) {
+          return new Response(
+            JSON.stringify({
+              code: 0,
+              data: {
+                on_lesson: true,
+                lesson_id: 887766,
+                classroom_id: 301,
+                course_name: '高级计算机体系结构'
+              }
+            })
+          )
+        }
+        if (urlStr.includes('courses/list')) {
+          return new Response(
+            JSON.stringify({
+              code: 0,
+              data: {
+                courses: [{ classroom_id: 301, course_name: '高级计算机体系结构', teacher_name: '李老师', cover: null }]
+              }
+            })
+          )
+        }
+        return new Response('{}')
+      }
+    }
+    const auth = await detectYuketangAuth(mockSes)
+    expect(auth.state).toBe('authenticated')
+
+    const courses = await fetchYuketangCourses(mockSes)
+    expect(courses.ok).toBe(true)
+    expect(courses.courses).toHaveLength(1)
+
+    const signins = await fetchYuketangSignIns(mockSes)
+    expect(signins.state).toBe('supported')
+    expect(signins.events).toHaveLength(1)
+    expect(signins.events[0]?.id).toBe('ykt-887766')
+    expect(signins.events[0]?.title).toContain('高级计算机体系结构 · 正在上课')
+  })
+})
+
