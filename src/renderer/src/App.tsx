@@ -164,6 +164,40 @@ export default function App(): JSX.Element {
 
   /* ------------------------------ 动作 ------------------------------ */
 
+  const checkAuth = useCallback(
+    async (id: PlatformId) => {
+      if (id === 'testbed' || id === 'zhihuishu') return
+      try {
+        const res = await api.classroom.auth(id)
+        if (res.ok) {
+          const authState =
+            res.data.state === 'authenticated'
+              ? 'authenticated'
+              : res.data.state === 'expired'
+                ? 'expired'
+                : 'unknown'
+          setPlatforms((prev) =>
+            prev.map((p) => (p.id === id ? { ...p, auth: authState } : p))
+          )
+        }
+      } catch {
+        /* 静默忽略探测异常 */
+      }
+    },
+    [api]
+  )
+
+  useEffect(() => {
+    void checkAuth(activeId)
+    if (scene === 'browser' && (activeId === 'chaoxing' || activeId === 'yuketang')) {
+      const timer = setInterval(() => {
+        void checkAuth(activeId)
+      }, 5000)
+      return () => clearInterval(timer)
+    }
+    return undefined
+  }, [activeId, scene, checkAuth])
+
   const openPlatform = useCallback(
     async (id: PlatformId) => {
       setActiveId(id)
@@ -176,8 +210,9 @@ export default function App(): JSX.Element {
       openedRef.current.add(id)
       setNotice(`已打开 ${id}`)
       pushActivity(`打开平台 ${id}`)
+      void checkAuth(id)
     },
-    [api, pushActivity]
+    [api, pushActivity, checkAuth]
   )
 
   const runCommand = useCallback(
