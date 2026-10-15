@@ -54,7 +54,7 @@ const api = {
         coords
       }),
     serverInfo: () =>
-      invoke<{ url: string | null; port: number }>('testbed:server-info'),
+      invoke<{ url: string | null; port: number; token: string }>('testbed:server-info'),
     resetServer: () =>
       invoke<{ reset: boolean }>('testbed:server-reset')
   },

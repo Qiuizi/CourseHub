@@ -321,7 +321,8 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
   handle('testbed:server-info', async () => {
     return {
       url: deps.testbedServer?.getUrl() ?? null,
-      port: deps.testbedServer?.getPort() ?? 0
+      port: deps.testbedServer?.getPort() ?? 0,
+      token: deps.testbedServer?.getToken() ?? ''
     }
   })
 

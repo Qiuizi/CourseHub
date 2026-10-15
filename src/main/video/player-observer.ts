@@ -19,6 +19,34 @@ import type { PlaybackObservation, PlayerState } from '@shared/types'
 function buildObserverScript(taskId: string): string {
   return `(() => {
   const targetId = ${JSON.stringify(taskId)};
+  const getAllVideos = () => {
+    let list = Array.from(document.querySelectorAll('video'));
+    if (list.length > 0) return list;
+    try {
+      const iframes = Array.from(document.querySelectorAll('iframe'));
+      for (const f of iframes) {
+        try {
+          const doc = f.contentDocument || f.contentWindow?.document;
+          if (doc) {
+            const sub = Array.from(doc.querySelectorAll('video'));
+            if (sub.length > 0) list = list.concat(sub);
+            const subFrames = Array.from(doc.querySelectorAll('iframe'));
+            for (const sf of subFrames) {
+              try {
+                const sdoc = sf.contentDocument || sf.contentWindow?.document;
+                if (sdoc) {
+                  const ssub = Array.from(sdoc.querySelectorAll('video'));
+                  if (ssub.length > 0) list = list.concat(ssub);
+                }
+              } catch (_) {}
+            }
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+    return list;
+  };
+
   let main = null;
   if (targetId) {
     const container = document.querySelector('[data-task="' + CSS.escape(targetId) + '"]');
@@ -30,7 +58,7 @@ function buildObserverScript(taskId: string): string {
     }
   }
   if (!main) {
-    const videos = Array.from(document.querySelectorAll('video'));
+    const videos = getAllVideos();
     if (videos.length === 0) {
       return { found: false, reason: 'no-video-element' };
     }
@@ -53,9 +81,10 @@ function buildObserverScript(taskId: string): string {
     return 'unknown';
   };
 
+  const allVids = getAllVideos();
   return {
     found: true,
-    count: document.querySelectorAll('video').length,
+    count: allVids.length,
     state: deriveState(main),
     currentTime: Number.isFinite(main.currentTime) ? main.currentTime : null,
     duration: Number.isFinite(main.duration) && main.duration > 0 ? main.duration : null,
@@ -193,6 +222,34 @@ export async function commandPlayer(
 
   const script = `(() => {
     const targetId = ${JSON.stringify(targetTaskId ?? null)};
+    const getAllVideos = () => {
+      let list = Array.from(document.querySelectorAll('video'));
+      if (list.length > 0) return list;
+      try {
+        const iframes = Array.from(document.querySelectorAll('iframe'));
+        for (const f of iframes) {
+          try {
+            const doc = f.contentDocument || f.contentWindow?.document;
+            if (doc) {
+              const sub = Array.from(doc.querySelectorAll('video'));
+              if (sub.length > 0) list = list.concat(sub);
+              const subFrames = Array.from(doc.querySelectorAll('iframe'));
+              for (const sf of subFrames) {
+                try {
+                  const sdoc = sf.contentDocument || sf.contentWindow?.document;
+                  if (sdoc) {
+                    const ssub = Array.from(sdoc.querySelectorAll('video'));
+                    if (ssub.length > 0) list = list.concat(ssub);
+                  }
+                } catch (_) {}
+              }
+            }
+          } catch (_) {}
+        }
+      } catch (_) {}
+      return list;
+    };
+
     let main = null;
     if (targetId) {
       const container = document.querySelector('[data-task="' + CSS.escape(targetId) + '"]');
@@ -204,7 +261,7 @@ export async function commandPlayer(
       }
     }
     if (!main) {
-      const videos = Array.from(document.querySelectorAll('video'));
+      const videos = getAllVideos();
       if (videos.length === 0) return { ok: false, reason: 'no-video-element' };
       main = videos[0];
       for (const v of videos) { if ((v.currentTime||0) > (main.currentTime||0)) main = v; }
@@ -217,7 +274,7 @@ export async function commandPlayer(
     try {
       switch (action) {
         case 'play': {
-          const allVideos = Array.from(document.querySelectorAll('video'));
+          const allVideos = getAllVideos();
           for (const other of allVideos) {
             if (other !== main && !other.paused) {
               other.pause();

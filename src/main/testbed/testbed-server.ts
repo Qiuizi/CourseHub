@@ -9,15 +9,20 @@
  * 4. 客户端再次 GET /api/signin/status 校验权威记录；
  * 5. 支持测试超出容差、重复提交、缺少定位等异常分支。
  *
- * 约束：
+ * 安全约束（开发文档 §9.3 & v0.3.3 安全审计）：
  * - 仅绑定 127.0.0.1，使用随机动态端口，不向公网开放；
- * - 静态托管 tests/fixtures/ 目录；
- * - 0 额外大型依赖，仅基于 Node 内置 http 模块。
+ * - 每次启动生成随机 UUID 访问令牌（Token），所有 /api/* 端点严格鉴权；
+ * - Origin 白名单校验：阻止外部网页跨站（CSRF）访问或触发测试状态；
+ * - 请求方法与 Content-Type 严格检查，POST 必须携带 application/json；
+ * - 请求体大小限制（64KB）与请求频率限流（60 req/s），防止内存放大或拒绝服务；
+ * - 静态文件路径规范化与目录越界（Path Traversal）拦截；
+ * - 退出时释放端口、销毁 Token 并清空打卡记录，完全隔离于生产 Session。
  */
 
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { haversineMeters } from '@shared/geo'
 
 export interface TestServerActivity {
@@ -64,8 +69,11 @@ const INITIAL_ACTIVITIES: TestServerActivity[] = [
 export class TestbedServer {
   private server: http.Server | null = null
   private port = 0
+  private token = ''
   private activities: TestServerActivity[] = JSON.parse(JSON.stringify(INITIAL_ACTIVITIES))
   private records = new Map<string, TestServerSignInRecord>()
+  private requestCountLastSec = 0
+  private lastSecTimestamp = Date.now()
 
   constructor(private readonly fixturesDir: string) {}
 
@@ -77,8 +85,13 @@ export class TestbedServer {
     return `http://127.0.0.1:${this.port}`
   }
 
+  getToken(): string {
+    return this.token
+  }
+
   async start(): Promise<number> {
     if (this.server && this.port > 0) return this.port
+    this.token = crypto.randomUUID()
 
     return new Promise((resolve, reject) => {
       const server = http.createServer((req, res) => {
@@ -109,6 +122,8 @@ export class TestbedServer {
       this.server?.close(() => {
         this.server = null
         this.port = 0
+        this.token = ''
+        this.records.clear()
         resolve()
       })
     })
@@ -119,28 +134,74 @@ export class TestbedServer {
     this.activities = JSON.parse(JSON.stringify(INITIAL_ACTIVITIES))
   }
 
-  private async parseBody(req: http.IncomingMessage): Promise<unknown> {
+  private checkRateLimit(): boolean {
+    const now = Date.now()
+    if (now - this.lastSecTimestamp > 1000) {
+      this.requestCountLastSec = 1
+      this.lastSecTimestamp = now
+      return true
+    }
+    this.requestCountLastSec++
+    return this.requestCountLastSec <= 60
+  }
+
+  private async parseBody(req: http.IncomingMessage): Promise<{ body: unknown; error?: string }> {
     return new Promise((resolve) => {
       let body = ''
+      let destroyed = false
       req.on('data', (chunk) => {
         body += chunk
-        if (body.length > 1024 * 1024) req.destroy()
+        if (body.length > 64 * 1024) {
+          destroyed = true
+          req.destroy()
+          resolve({ body: null, error: 'PAYLOAD_TOO_LARGE' })
+        }
       })
       req.on('end', () => {
+        if (destroyed) return
         try {
-          resolve(body ? JSON.parse(body) : {})
+          resolve({ body: body ? JSON.parse(body) : {} })
         } catch {
-          resolve({})
+          resolve({ body: {}, error: 'INVALID_JSON' })
         }
       })
     })
   }
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    // CORS 允许测试页面跨域或同源请求
-    res.setHeader('Access-Control-Allow-Origin', '*')
+    // 0. 请求频率限制（防止死循环洪泛）
+    if (!this.checkRateLimit()) {
+      res.writeHead(429, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: false, code: 'TOO_MANY_REQUESTS', message: '请求过于频繁' }))
+      return
+    }
+
+    // 1. 验证 Origin（来源白名单检查，拦截外部网站的跨站调用）
+    const origin = req.headers.origin
+    if (origin) {
+      const isAllowedOrigin =
+        origin === 'null' ||
+        origin === `http://127.0.0.1:${this.port}` ||
+        origin === `http://localhost:${this.port}` ||
+        origin.startsWith('vscode-webview://')
+      if (!isAllowedOrigin) {
+        res.writeHead(403, { 'Content-Type': 'application/json' })
+        res.end(
+          JSON.stringify({
+            ok: false,
+            code: 'FORBIDDEN_ORIGIN',
+            message: '安全拦截：禁止外部未授权跨站访问本地测试服务'
+          })
+        )
+        return
+      }
+      res.setHeader('Access-Control-Allow-Origin', origin)
+    } else {
+      res.setHeader('Access-Control-Allow-Origin', '*')
+    }
+
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-CourseHub-Testbed-Token')
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204)
@@ -151,7 +212,46 @@ export class TestbedServer {
     const parsedUrl = new URL(req.url || '/', `http://127.0.0.1:${this.port}`)
     const pathname = parsedUrl.pathname
 
-    // 1. GET /api/activities
+    // 2. 校验请求方法：仅允许 GET 与 POST
+    if (req.method !== 'GET' && req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: false, code: 'METHOD_NOT_ALLOWED', message: '仅支持 GET 与 POST 方法' }))
+      return
+    }
+
+    // 3. API 端点鉴权与 Content-Type 检查
+    if (pathname.startsWith('/api/')) {
+      const clientToken =
+        (req.headers['x-coursehub-testbed-token'] as string) || parsedUrl.searchParams.get('token') || ''
+      if (!this.token || clientToken !== this.token) {
+        res.writeHead(401, { 'Content-Type': 'application/json' })
+        res.end(
+          JSON.stringify({
+            ok: false,
+            code: 'UNAUTHORIZED',
+            message: '未授权：缺少或无效的测试服务访问令牌 (Token)'
+          })
+        )
+        return
+      }
+
+      if (req.method === 'POST') {
+        const ctype = req.headers['content-type'] || ''
+        if (!ctype.toLowerCase().includes('application/json')) {
+          res.writeHead(415, { 'Content-Type': 'application/json' })
+          res.end(
+            JSON.stringify({
+              ok: false,
+              code: 'UNSUPPORTED_MEDIA_TYPE',
+              message: 'POST 请求需指定 Content-Type: application/json'
+            })
+          )
+          return
+        }
+      }
+    }
+
+    // 4. GET /api/activities
     if (req.method === 'GET' && pathname === '/api/activities') {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(
@@ -166,7 +266,7 @@ export class TestbedServer {
       return
     }
 
-    // 2. GET /api/signin/status?activityId=...
+    // 5. GET /api/signin/status?activityId=...
     if (req.method === 'GET' && pathname === '/api/signin/status') {
       const activityId = parsedUrl.searchParams.get('activityId') || ''
       const record = this.records.get(activityId) || null
@@ -182,9 +282,16 @@ export class TestbedServer {
       return
     }
 
-    // 3. POST /api/signin
+    // 6. POST /api/signin
     if (req.method === 'POST' && pathname === '/api/signin') {
-      const payload = (await this.parseBody(req)) as {
+      const parsed = await this.parseBody(req)
+      if (parsed.error === 'PAYLOAD_TOO_LARGE') {
+        res.writeHead(413, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: false, code: 'PAYLOAD_TOO_LARGE', message: '请求体超出 64KB 限制' }))
+        return
+      }
+
+      const payload = (parsed.body ?? {}) as {
         activityId?: string
         latitude?: number
         longitude?: number
@@ -285,7 +392,7 @@ export class TestbedServer {
       return
     }
 
-    // 4. POST /api/reset
+    // 7. POST /api/reset
     if (req.method === 'POST' && pathname === '/api/reset') {
       this.reset()
       res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -293,13 +400,16 @@ export class TestbedServer {
       return
     }
 
-    // 5. 静态文件托管（tests/fixtures/*）
+    // 8. 静态文件安全托管（tests/fixtures/*，严格拦截目录越界）
     const cleanPath = pathname.replace(/^\/+/, '')
     const targetFile = path.resolve(this.fixturesDir, cleanPath)
-    if (targetFile.startsWith(this.fixturesDir) && fs.existsSync(targetFile)) {
-      const stat = fs.statSync(targetFile)
+    const normalizedTarget = path.normalize(targetFile)
+    const normalizedFixtures = path.normalize(this.fixturesDir)
+
+    if (normalizedTarget.startsWith(normalizedFixtures) && fs.existsSync(normalizedTarget)) {
+      const stat = fs.statSync(normalizedTarget)
       if (stat.isFile()) {
-        const ext = path.extname(targetFile).toLowerCase()
+        const ext = path.extname(normalizedTarget).toLowerCase()
         const mimeMap: Record<string, string> = {
           '.html': 'text/html; charset=utf-8',
           '.js': 'application/javascript',
@@ -311,7 +421,7 @@ export class TestbedServer {
           'Content-Type': mimeMap[ext] || 'application/octet-stream',
           'Content-Length': stat.size
         })
-        fs.createReadStream(targetFile).pipe(res)
+        fs.createReadStream(normalizedTarget).pipe(res)
         return
       }
     }

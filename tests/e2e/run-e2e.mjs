@@ -677,7 +677,7 @@ async function main() {
       `state=${yktAuth?.state}, evidence=${yktAuth?.evidence}`
     )
 
-    // 8.11 签到闭环：本地 HTTP 测试服务双向闭环（服务端容差判定、越界拦截、重复拦截与权威状态回读）
+    // 8.11 签到闭环：本地 HTTP 测试服务双向闭环（安全加固、服务端容差判定、越界拦截、重复拦截与权威状态回读）
     let srvTest = null
     try {
       const srvInfo = await win.evaluate(async () => {
@@ -685,13 +685,22 @@ async function main() {
         if (info.ok) await window.coursehub.testbed.resetServer()
         return info
       })
-      if (srvInfo?.ok && srvInfo.data?.url) {
+      if (srvInfo?.ok && srvInfo.data?.url && srvInfo.data?.token) {
         const baseUrl = srvInfo.data.url
+        const token = srvInfo.data.token
+        const authHeaders = {
+          'Content-Type': 'application/json',
+          'x-coursehub-testbed-token': token
+        }
 
-        // 1. 正常普通签到
+        // 0. 安全加固验证：未携带 Token 请求被 401 拦截
+        const rNoAuth = await fetch(`${baseUrl}/api/activities`)
+        const jNoAuth = await rNoAuth.json()
+
+        // 1. 正常普通签到（携带有效 Token）
         const r1 = await fetch(`${baseUrl}/api/signin`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: authHeaders,
           body: JSON.stringify({ activityId: 'test-srv-sign-01' })
         })
         const j1 = await r1.json()
@@ -699,7 +708,7 @@ async function main() {
         // 2. 定位签到：缺少坐标拦截 (LOCATION_REQUIRED)
         const rMissing = await fetch(`${baseUrl}/api/signin`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: authHeaders,
           body: JSON.stringify({ activityId: 'test-srv-sign-02' })
         })
         const jMissing = await rMissing.json()
@@ -707,7 +716,7 @@ async function main() {
         // 3. 定位签到：超出容差拦截 (OUT_OF_RANGE，例如上海坐标 31.2304, 121.4737，距北京约 1000km > 500m 容差)
         const rOut = await fetch(`${baseUrl}/api/signin`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: authHeaders,
           body: JSON.stringify({ activityId: 'test-srv-sign-02', latitude: 31.2304, longitude: 121.4737, accuracy: 20 })
         })
         const jOut = await rOut.json()
@@ -715,7 +724,7 @@ async function main() {
         // 4. 定位签到：在容差内成功打卡 (北京天安门 39.9042, 116.4074)
         const rIn = await fetch(`${baseUrl}/api/signin`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: authHeaders,
           body: JSON.stringify({ activityId: 'test-srv-sign-02', latitude: 39.9042, longitude: 116.4074, accuracy: 30 })
         })
         const jIn = await rIn.json()
@@ -723,16 +732,21 @@ async function main() {
         // 5. 重复签到拦截 (ALREADY_SIGNED)
         const rDup = await fetch(`${baseUrl}/api/signin`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: authHeaders,
           body: JSON.stringify({ activityId: 'test-srv-sign-02', latitude: 39.9042, longitude: 116.4074 })
         })
         const jDup = await rDup.json()
 
         // 6. 服务端权威状态回读
-        const s1 = await fetch(`${baseUrl}/api/signin/status?activityId=test-srv-sign-01`).then(r => r.json())
-        const s2 = await fetch(`${baseUrl}/api/signin/status?activityId=test-srv-sign-02`).then(r => r.json())
+        const s1 = await fetch(`${baseUrl}/api/signin/status?activityId=test-srv-sign-01`, {
+          headers: { 'x-coursehub-testbed-token': token }
+        }).then(r => r.json())
+        const s2 = await fetch(`${baseUrl}/api/signin/status?activityId=test-srv-sign-02`, {
+          headers: { 'x-coursehub-testbed-token': token }
+        }).then(r => r.json())
 
         srvTest = {
+          unauthorizedBlocked: rNoAuth.status === 401 && jNoAuth.code === 'UNAUTHORIZED',
           normalPass: j1.code === 'SUCCESS',
           missingCoordsBlocked: jMissing.code === 'LOCATION_REQUIRED',
           outOfRangeBlocked: jOut.code === 'OUT_OF_RANGE',
@@ -747,8 +761,9 @@ async function main() {
     }
 
     record(
-      '闭环B-4：本地测试服务端双向闭环（容差判定、越界拦截、重复拦截与权威状态回读）',
-      srvTest?.normalPass &&
+      '闭环B-4：本地测试服务端双向闭环（安全加固、容差判定、越界拦截、重复拦截与权威状态回读）',
+      srvTest?.unauthorizedBlocked &&
+        srvTest?.normalPass &&
         srvTest?.missingCoordsBlocked &&
         srvTest?.outOfRangeBlocked &&
         srvTest?.locationPass &&
