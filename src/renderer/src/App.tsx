@@ -84,16 +84,38 @@ export default function App(): JSX.Element {
     })
   }, [api])
 
+  const pushActivity = useCallback((title: string) => {
+    setActivity((prev) => [
+      { id: `a-${Date.now()}`, time: new Date().toLocaleTimeString(), title },
+      ...prev.slice(0, 7)
+    ])
+  }, [])
+
   /* --------------------------- 事件订阅 --------------------------- */
   useEffect(() => api.events.onVideoObservation(setObservation), [api])
   useEffect(() => api.events.onGeoUpdate(setGeoRun), [api])
 
   useEffect(() => {
-    return api.events.onContinuousStopped(() => {
+    const unsub1 = api.events.onContinuousStopped(() => {
       setContinuous(false)
       pushActivity('已停止连续播放')
     })
-  }, [api])
+    const unsub2 = api.events.onTaskSwitched((evt) => {
+      setActiveTaskId(evt.currentTaskId)
+      pushActivity(`自动连续播放：切换至 ${evt.currentTaskId}`)
+      setNotice(`自动连播：已切换至 ${evt.currentTaskId}`)
+    })
+    const unsub3 = api.events.onContinuousCompleted(() => {
+      setContinuous(false)
+      pushActivity('连续播放队列已全部完成')
+      setNotice('连续播放队列已全部完成')
+    })
+    return () => {
+      unsub1()
+      unsub2()
+      unsub3()
+    }
+  }, [api, pushActivity])
 
   /* --------------------------- 原生视图 bounds --------------------------- */
 
@@ -142,13 +164,6 @@ export default function App(): JSX.Element {
 
   /* ------------------------------ 动作 ------------------------------ */
 
-  const pushActivity = useCallback((title: string) => {
-    setActivity((prev) => [
-      { id: `a-${Date.now()}`, time: new Date().toLocaleTimeString(), title },
-      ...prev.slice(0, 7)
-    ])
-  }, [])
-
   const openPlatform = useCallback(
     async (id: PlatformId) => {
       setActiveId(id)
@@ -169,14 +184,14 @@ export default function App(): JSX.Element {
     async (action: string, value?: number) => {
       setBusy(action)
       try {
-        const r = await api.video.command(activeId, action, value)
+        const r = await api.video.command(activeId, action, value, activeTaskId ?? undefined)
         setNotice(r.ok ? null : `失败：${r.error.code} ${r.error.message}`)
         if (r.ok && action === 'setRate') pushActivity(`倍速设为 ${value}x`)
       } finally {
         setBusy(null)
       }
     },
-    [activeId, api, pushActivity]
+    [activeId, activeTaskId, api, pushActivity]
   )
 
   const startObserving = useCallback(
@@ -220,8 +235,12 @@ export default function App(): JSX.Element {
       pushActivity(`加载测试素材 ${r.data.fixture}`)
       // 测试台有真实可播放视频：装载章节目录并开始观测
       if (name === 'video-task.html') {
-        setTasks(TEST_TASKS)
-        const first = TEST_TASKS[0]!
+        const vList = await api.video.list('testbed')
+        const currentTasks = (vList.ok && vList.data.tasks.length > 0)
+          ? (vList.data.tasks as ChapterTask[])
+          : TEST_TASKS
+        setTasks(currentTasks)
+        const first = currentTasks[0]!
         setActiveTaskId(first.id)
         await startObserving(first.id)
       }
@@ -332,6 +351,7 @@ export default function App(): JSX.Element {
             onSelectTask={(id) => {
               setActiveTaskId(id)
               void startObserving(id)
+              void api.video.command(activeId, 'play', undefined, id)
               pushActivity(`切换到任务 ${id}`)
             }}
             onCommand={(a, v) => void runCommand(a, v)}
@@ -343,6 +363,14 @@ export default function App(): JSX.Element {
             onLoadFixture={() => {
               setScene('video')
               void loadFixture('video-task.html')
+            }}
+            onSimulateLifecycle={(input) => {
+              void api.testbed.simulateLifecycle(input).then((res) => {
+                if (res.ok) {
+                  pushActivity(`模拟生命周期: ${JSON.stringify(input)} -> state=${res.data.visibilityState}`)
+                  setNotice(`生命周期已模拟：visibilityState=${res.data.visibilityState}, hasFocus=${res.data.hasFocus}`)
+                }
+              })
             }}
           />
         )
@@ -567,7 +595,8 @@ export default function App(): JSX.Element {
           onContinuousChange={(v) => {
             setContinuous(v)
             pushActivity(v ? '开启连续播放' : '关闭连续播放')
-            if (!v) void api.video.stopContinuous()
+            if (v) void api.video.startContinuous(activeId, tasks.map(t => t.id))
+            else void api.video.stopContinuous()
           }}
           autoMute={autoMute}
           onAutoMuteChange={setAutoMute}

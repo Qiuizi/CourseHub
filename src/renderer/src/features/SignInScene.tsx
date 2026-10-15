@@ -19,9 +19,20 @@ export interface SignInSceneProps {
   onOpenPlatform: () => void
 }
 
+interface SignInEventItem {
+  id: string
+  title: string
+  kind: string
+  status: string
+  startAt: string | null
+  endAt: string | null
+  locationRequired: boolean
+  locationText: string | null
+}
+
 interface SignInPayload {
   state: string
-  events: unknown[]
+  events: SignInEventItem[]
   fetchedAt: string | null
   reason: string | null
 }
@@ -30,21 +41,39 @@ interface SignInPayload {
  * 签到中心。
  *
  * 契约：检测到活动 ≠ 已完成签到。没有真实平台数据源时明确返回
- * 「未验证」，绝不生成占位签到条目。
+ * 「未验证」，绝不生成占位签到条目。测试台支持端到端真实测试打卡。
  */
 export function SignInScene({ platformId, platformName, onOpenPlatform }: SignInSceneProps): ReactNode {
   const [data, setData] = useState<SignInPayload | null>(null)
   const [loading, setLoading] = useState(false)
+  const [triggeringId, setTriggeringId] = useState<string | null>(null)
+  const [triggerMsg, setTriggerMsg] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const r = await window.coursehub.classroom.todaySignIns()
-      setData(r.ok ? r.data : { state: 'error', events: [], fetchedAt: null, reason: r.error.message })
+      const r = await window.coursehub.classroom.todaySignIns(platformId as any)
+      setData(r.ok ? (r.data as SignInPayload) : { state: 'error', events: [], fetchedAt: null, reason: r.error.message })
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [platformId])
+
+  const handleTrigger = async (id: string) => {
+    setTriggeringId(id)
+    setTriggerMsg(null)
+    try {
+      const res = await window.coursehub.testbed.triggerSignIn(id)
+      if (res.ok) {
+        setTriggerMsg(`活动 [${id}]：${res.data.message}`)
+        void load()
+      } else {
+        setTriggerMsg(`活动 [${id}] 执行失败：${res.error.message}`)
+      }
+    } finally {
+      setTriggeringId(null)
+    }
+  }
 
   useEffect(() => {
     void load()
@@ -55,6 +84,12 @@ export function SignInScene({ platformId, platformName, onOpenPlatform }: SignIn
 
   return (
     <div style={{ maxWidth: 860, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {triggerMsg && (
+        <Notice tone={triggerMsg.includes('失败') || triggerMsg.includes('超出') ? 'error' : 'info'}>
+          {triggerMsg}
+        </Notice>
+      )}
+
       <Card
         title="今日签到活动"
         action={
@@ -83,6 +118,49 @@ export function SignInScene({ platformId, platformName, onOpenPlatform }: SignIn
               {data.reason ? ` 原因：${data.reason}` : ''}
             </Notice>
           </>
+        ) : data?.events && data.events.length > 0 ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {data.events.map((ev) => (
+              <div
+                key={ev.id}
+                style={{
+                  padding: 16,
+                  borderRadius: 'var(--r-block)',
+                  background: 'var(--ch-subtle)',
+                  border: '1px solid var(--ch-border)',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: 12
+                }}
+                data-testid={`signin-item-${ev.id}`}
+              >
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <strong>{ev.title}</strong>
+                    <span className={`chip ${ev.kind === 'location' ? 'chip-tint' : ''}`}>{ev.kind}</span>
+                    <span className="chip chip-emerald">{ev.status}</span>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: 'var(--ch-text-3)' }}>
+                    {ev.locationText ? `位置限制：${ev.locationText}` : '无需位置，点击即可完成打卡'}
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    style={{ fontSize: 11 }}
+                    onClick={() => handleTrigger(ev.id)}
+                    disabled={triggeringId === ev.id}
+                  >
+                    {triggeringId === ev.id ? '正在打卡…' : '执行测试打卡'}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
         ) : (
           <Empty text="当前没有签到数据。" />
         )}

@@ -16,15 +16,28 @@ import type { PlaybackObservation, PlayerState } from '@shared/types'
  * 以字符串形式交给 executeJavaScript，函数体自包含，不接受外部变量。
  * 只读取标准 HTML5 video 属性，通过标准事件更新状态，不做任何写操作。
  */
-const OBSERVER_SCRIPT = `(() => {
-  const videos = Array.from(document.querySelectorAll('video'));
-  if (videos.length === 0) {
-    return { found: false, reason: 'no-video-element' };
+function buildObserverScript(taskId: string): string {
+  return `(() => {
+  const targetId = ${JSON.stringify(taskId)};
+  let main = null;
+  if (targetId) {
+    const container = document.querySelector('[data-task="' + CSS.escape(targetId) + '"]');
+    if (container) {
+      main = container.querySelector('video');
+    } else {
+      const el = document.getElementById(targetId);
+      if (el && el.tagName === 'VIDEO') main = el;
+    }
   }
-  // 取当前时间最大的那个作为主播放器
-  let main = videos[0];
-  for (const v of videos) {
-    if ((v.currentTime || 0) > (main.currentTime || 0)) main = v;
+  if (!main) {
+    const videos = Array.from(document.querySelectorAll('video'));
+    if (videos.length === 0) {
+      return { found: false, reason: 'no-video-element' };
+    }
+    main = videos[0];
+    for (const v of videos) {
+      if ((v.currentTime || 0) > (main.currentTime || 0)) main = v;
+    }
   }
 
   const deriveState = (v) => {
@@ -42,7 +55,7 @@ const OBSERVER_SCRIPT = `(() => {
 
   return {
     found: true,
-    count: videos.length,
+    count: document.querySelectorAll('video').length,
     state: deriveState(main),
     currentTime: Number.isFinite(main.currentTime) ? main.currentTime : null,
     duration: Number.isFinite(main.duration) && main.duration > 0 ? main.duration : null,
@@ -52,6 +65,7 @@ const OBSERVER_SCRIPT = `(() => {
     src: main.currentSrc || main.src || null
   };
 })()`
+}
 
 export interface RawObserverResult {
   found: boolean
@@ -120,13 +134,16 @@ export function toObservation(taskId: string, raw: RawObserverResult): PlaybackO
 export class PlayerObserver {
   private timer: NodeJS.Timeout | null = null
   private destroyed = false
+  private readonly script: string
 
   constructor(
     private readonly taskId: string,
     private readonly wc: Electron.WebContents,
     private readonly onObservation: (obs: PlaybackObservation) => void,
     private readonly intervalMs = 1000
-  ) {}
+  ) {
+    this.script = buildObserverScript(taskId)
+  }
 
   start(): void {
     if (this.timer || this.destroyed) return
@@ -136,7 +153,7 @@ export class PlayerObserver {
         return
       }
       try {
-        const raw = (await this.wc.executeJavaScript(OBSERVER_SCRIPT, true)) as RawObserverResult
+        const raw = (await this.wc.executeJavaScript(this.script, true)) as RawObserverResult
         if (this.destroyed) return
         this.onObservation(toObservation(this.taskId, raw))
       } catch {
@@ -158,6 +175,8 @@ export class PlayerObserver {
   }
 }
 
+export type PlayerAction = 'play' | 'pause' | 'mute' | 'unmute' | 'setVolume' | 'setRate' | 'stop' | 'seek'
+
 /**
  * 受限播放控制。
  *
@@ -166,23 +185,49 @@ export class PlayerObserver {
  */
 export async function commandPlayer(
   wc: Electron.WebContents,
-  action: 'play' | 'pause' | 'mute' | 'unmute' | 'setVolume' | 'setRate' | 'stop',
-  value?: number
+  action: PlayerAction,
+  value?: number,
+  targetTaskId?: string
 ): Promise<{ ok: boolean; code?: string; message?: string }> {
   if (wc.isDestroyed()) return { ok: false, code: 'PLAYER_UNAVAILABLE', message: '页面已销毁' }
 
   const script = `(() => {
-    const videos = Array.from(document.querySelectorAll('video'));
-    if (videos.length === 0) return { ok: false, reason: 'no-video-element' };
-    let main = videos[0];
-    for (const v of videos) { if ((v.currentTime||0) > (main.currentTime||0)) main = v; }
+    const targetId = ${JSON.stringify(targetTaskId ?? null)};
+    let main = null;
+    if (targetId) {
+      const container = document.querySelector('[data-task="' + CSS.escape(targetId) + '"]');
+      if (container) {
+        main = container.querySelector('video');
+      } else {
+        const el = document.getElementById(targetId);
+        if (el && el.tagName === 'VIDEO') main = el;
+      }
+    }
+    if (!main) {
+      const videos = Array.from(document.querySelectorAll('video'));
+      if (videos.length === 0) return { ok: false, reason: 'no-video-element' };
+      main = videos[0];
+      for (const v of videos) { if ((v.currentTime||0) > (main.currentTime||0)) main = v; }
+    }
+    if (typeof window.__chSetActiveTask === 'function' && targetId) {
+      try { window.__chSetActiveTask(targetId); } catch (_) {}
+    }
     const action = ${JSON.stringify(action)};
     const value = ${JSON.stringify(value ?? null)};
     try {
       switch (action) {
         case 'play': {
+          const allVideos = Array.from(document.querySelectorAll('video'));
+          for (const other of allVideos) {
+            if (other !== main && !other.paused) {
+              other.pause();
+            }
+          }
           const p = main.play();
-          if (p && typeof p.then === 'function') { p.then(()=>({ok:true})).catch((e)=>({ok:false, reason:String(e)})); return { pending: true }; }
+          if (p && typeof p.then === 'function') {
+            p.then(()=>({ok:true})).catch((e)=>({ok:false, reason:String(e)}));
+            return { pending: true };
+          }
           return { ok: true };
         }
         case 'pause': main.pause(); return { ok: true };
@@ -196,6 +241,11 @@ export async function commandPlayer(
           if (typeof value !== 'number' || value < 0.25 || value > 4) return { ok:false, reason:'invalid-rate' };
           main.playbackRate = value; return { ok: true };
         }
+        case 'seek': {
+          if (typeof value !== 'number' || value < 0) return { ok:false, reason:'invalid-seek' };
+          main.currentTime = value;
+          return { ok: true };
+        }
         case 'stop': main.pause(); try { main.currentTime = 0; } catch(_) {} return { ok: true };
         default: return { ok:false, reason:'unknown-action' };
       }
@@ -208,7 +258,7 @@ export async function commandPlayer(
       pending?: boolean
       reason?: string
     }
-    if (res?.ok) return { ok: true }
+    if (res?.ok || res?.pending) return { ok: true }
     return {
       ok: false,
       code: 'PLAYER_UNAVAILABLE',

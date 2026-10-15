@@ -42,7 +42,17 @@ const api = {
   },
   testbed: {
     loadFixture: (fixture: string) =>
-      invoke<{ url: string | null; fixture: string }>('testbed:load-fixture', { fixture })
+      invoke<{ url: string | null; fixture: string }>('testbed:load-fixture', { fixture }),
+    simulateLifecycle: (input: { visibility?: 'visible' | 'hidden'; focus?: 'focus' | 'blur' }) =>
+      invoke<{ ok: boolean; visibilityState: string; hasFocus: boolean; events: unknown[] }>(
+        'testbed:simulate-lifecycle',
+        input
+      ),
+    triggerSignIn: (signinId: string, coords?: { latitude: number; longitude: number; accuracy?: number }) =>
+      invoke<{ ok: boolean; status: string; message: string; state: unknown }>('testbed:trigger-signin', {
+        signinId,
+        coords
+      })
   },
   browser: {
     navigate: (platformId: PlatformId, url: string) =>
@@ -57,19 +67,22 @@ const api = {
       invoke<{ opened: boolean }>('browser:open-external', { platformId, url })
   },
   classroom: {
-    todaySignIns: () =>
+    todaySignIns: (platformId?: PlatformId) =>
       invoke<{ state: string; events: unknown[]; fetchedAt: string | null; reason: string | null }>(
-        'classroom:today-signins'
+        'classroom:today-signins',
+        { platformId }
       )
   },
   video: {
     list: (platformId: PlatformId) =>
       invoke<{ state: string; reason: string | null; tasks: unknown[] }>('video:list', { platformId }),
-    command: (platformId: PlatformId, action: string, value?: number) =>
-      invoke<{ applied: boolean }>('video:command', { platformId, action, value }),
+    command: (platformId: PlatformId, action: string, value?: number, taskId?: string) =>
+      invoke<{ applied: boolean }>('video:command', { platformId, action, value, taskId }),
     observe: (platformId: PlatformId, taskId: string) =>
       invoke<{ observing: string }>('video:observe', { platformId, taskId }),
     stopObserve: (taskId: string) => invoke<{ stopped: boolean }>('video:stop-observe', { taskId }),
+    startContinuous: (platformId: PlatformId, taskQueue?: string[]) =>
+      invoke<{ started: boolean; queue: string[] }>('video:start-continuous', { platformId, taskQueue }),
     stopContinuous: () => invoke<{ stopped: boolean }>('video:stop-continuous')
   },
   geoTest: {
@@ -122,6 +135,11 @@ const api = {
       invoke<{ mapping: Record<string, string>; unmatched: string[]; allKeys: string[] }>(
         'question:suggest-mapping',
         { question, suggested }
+      ),
+    autoAnalyzeAndFill: (input: { platformId?: PlatformId; questionId?: string }) =>
+      invoke<{ ok: boolean; results: unknown[]; totalProcessed: number; isMock: boolean; error: string | null }>(
+        'question:auto-analyze-and-fill',
+        input
       )
   },
   settings: {
@@ -157,6 +175,16 @@ const api = {
       const handler = (_e: unknown, payload: { chunk: string }): void => cb(payload.chunk)
       ipcRenderer.on('ai:delta', handler)
       return () => ipcRenderer.removeListener('ai:delta', handler)
+    },
+    onTaskSwitched: (cb: (evt: { previousTaskId: string; currentTaskId: string }) => void): (() => void) => {
+      const handler = (_e: unknown, evt: { previousTaskId: string; currentTaskId: string }): void => cb(evt)
+      ipcRenderer.on('video:task-switched', handler)
+      return () => ipcRenderer.removeListener('video:task-switched', handler)
+    },
+    onContinuousCompleted: (cb: (evt: { completedAt: string }) => void): (() => void) => {
+      const handler = (_e: unknown, evt: { completedAt: string }): void => cb(evt)
+      ipcRenderer.on('video:continuous-completed', handler)
+      return () => ipcRenderer.removeListener('video:continuous-completed', handler)
     },
     onContinuousStopped: (cb: () => void): (() => void) => {
       const handler = (): void => cb()

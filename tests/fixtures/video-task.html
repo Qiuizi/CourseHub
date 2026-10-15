@@ -19,23 +19,77 @@
       本页不属于任何真实平台，不产生任何学习记录。
     </div>
 
-    <div class="task" data-task="t1">
-      <div>任务 1 · 开场导学（8 秒）</div>
+    <div class="task" data-task="t1" id="task-t1">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <strong>任务 1 · 开场导学（8 秒）</strong>
+        <span class="active-badge" id="badge-t1" style="font-size:11px;color:#38bdf8;">[当前激活]</span>
+      </div>
       <video id="v1" src="coursehub-test-video.mp4" preload="auto" muted playsinline></video>
       <div class="status" id="s1">state: loading</div>
     </div>
 
-    <div class="task" data-task="t2">
-      <div>任务 2 · 章节小测（同一素材，用于验证上一/下一任务切换）</div>
+    <div class="task" data-task="t2" id="task-t2">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <strong>任务 2 · 章节小测（8 秒，同素材用于连播验证）</strong>
+        <span class="active-badge" id="badge-t2" style="font-size:11px;color:#94a3b8;display:none;">[当前激活]</span>
+      </div>
       <video id="v2" src="coursehub-test-video.mp4" preload="auto" muted playsinline></video>
       <div class="status" id="s2">state: loading</div>
     </div>
 
+    <div class="task" style="border-color:#334155;background:#0d1527;">
+      <div style="font-size:13px;font-weight:600;margin-bottom:6px;">页面生命周期与焦点观测日志</div>
+      <div id="lifecycle-log" style="font-size:12px;font-family:ui-monospace,monospace;color:#94a3b8;max-height:80px;overflow-y:auto;">
+        (暂无生命周期事件)
+      </div>
+    </div>
+
     <script>
       const tasks = [
-        { id: 't1', el: document.getElementById('v1'), status: document.getElementById('s1') },
-        { id: 't2', el: document.getElementById('v2'), status: document.getElementById('s2') }
+        { id: 't1', el: document.getElementById('v1'), status: document.getElementById('s1'), container: document.getElementById('task-t1'), badge: document.getElementById('badge-t1') },
+        { id: 't2', el: document.getElementById('v2'), status: document.getElementById('s2'), container: document.getElementById('task-t2'), badge: document.getElementById('badge-t2') }
       ]
+
+      let activeTaskId = 't1'
+      const lifecycleEvents = []
+
+      function logLifecycle(name, detail) {
+        const time = new Date().toISOString().split('T')[1].replace('Z','')
+        const entry = { name, detail, time }
+        lifecycleEvents.push(entry)
+        window.__chLifecycleEvents = lifecycleEvents
+        const logEl = document.getElementById('lifecycle-log')
+        if (logEl) {
+          logEl.innerHTML = lifecycleEvents.slice(-6).map(e => `<div>[${e.time}] ${e.name}: ${e.detail}</div>`).join('')
+        }
+      }
+
+      document.addEventListener('visibilitychange', () => {
+        logLifecycle('visibilitychange', 'visibilityState=' + document.visibilityState)
+      })
+      window.addEventListener('blur', () => {
+        logLifecycle('window:blur', 'hasFocus=' + document.hasFocus())
+      })
+      window.addEventListener('focus', () => {
+        logLifecycle('window:focus', 'hasFocus=' + document.hasFocus())
+      })
+
+      function setActiveTask(id) {
+        activeTaskId = id
+        window.__chActiveTaskId = id
+        for (const t of tasks) {
+          if (t.id === id) {
+            t.container.style.borderColor = '#0284c7'
+            t.badge.style.display = 'inline'
+            t.badge.style.color = '#38bdf8'
+          } else {
+            t.container.style.borderColor = '#223049'
+            t.badge.style.display = 'none'
+            // 切换非活动任务时暂停其视频
+            if (!t.el.paused) t.el.pause()
+          }
+        }
+      }
 
       function refresh(t) {
         const v = t.el
@@ -57,16 +111,24 @@
 
       for (const t of tasks) {
         for (const ev of ['loadedmetadata', 'play', 'pause', 'ended', 'waiting', 'canplay', 'ratechange', 'volumechange', 'error', 'seeked']) {
-          t.el.addEventListener(ev, () => refresh(t))
+          t.el.addEventListener(ev, () => {
+            refresh(t)
+            if (ev === 'ended') {
+              window.__chLastEndedTask = t.id
+              logLifecycle('media:ended', `taskId=${t.id}`)
+            }
+          })
         }
       }
 
-      // 供 E2E 与 UI 读取
+      // 供 E2E 与主进程调用
       window.__chTasks = tasks
-      window.__chReady = tasks.every((t) => t.el.readyState >= 1)
+      window.__chActiveTaskId = activeTaskId
+      window.__chSetActiveTask = setActiveTask
+      window.__chLifecycleEvents = lifecycleEvents
+      window.__chLogLifecycle = logLifecycle
       window.__chRefresh = () => tasks.forEach(refresh)
 
-      // 元数据就绪后刷新一次
       let loaded = 0
       for (const t of tasks) {
         if (t.el.readyState >= 1) {
@@ -81,6 +143,7 @@
         }
       }
       if (loaded === tasks.length) window.__chReady = true
+      setActiveTask('t1')
     </script>
   </body>
 </html>

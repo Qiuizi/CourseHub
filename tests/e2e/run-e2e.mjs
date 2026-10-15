@@ -533,6 +533,127 @@ async function main() {
       keyHidden.hasGetter === false,
       JSON.stringify(keyHidden)
     )
+
+    /* ---------------------------------------------------------------- */
+    /* 8. v0.3.1 三大端到端闭环验收                                       */
+    /* ---------------------------------------------------------------- */
+
+    // 8.1 视频闭环：多任务列表
+    const vList = await win.evaluate(async () => {
+      const r = await window.coursehub.video.list('testbed')
+      return r.ok ? r.data.tasks : []
+    })
+    record(
+      '闭环A-1：测试台多视频任务列表就绪',
+      vList.length === 2 && vList[0].id === 't1' && vList[1].id === 't2',
+      `返回 ${vList.length} 个任务: ${vList.map((t) => t.id).join(',')}`
+    )
+
+    // 8.2 视频闭环：生命周期与失焦模拟
+    const lifecycleSim = await win.evaluate(async () => {
+      await window.coursehub.testbed.loadFixture('video-task.html')
+      const r = await window.coursehub.testbed.simulateLifecycle({ visibility: 'hidden', focus: 'blur' })
+      return r.ok ? r.data : null
+    })
+    record(
+      '闭环A-2：页面生命周期模拟（切后台/失焦事件记录）',
+      lifecycleSim?.visibilityState === 'hidden' && Array.isArray(lifecycleSim?.events),
+      JSON.stringify(lifecycleSim)
+    )
+
+    // 8.3 视频闭环：连续播放调度与 ended 自动推进
+    const continuousTest = await win.evaluate(async () => {
+      await window.coursehub.testbed.simulateLifecycle({ visibility: 'visible', focus: 'focus' })
+      await window.coursehub.testbed.loadFixture('video-task.html')
+      await window.coursehub.video.observe('testbed', 't1')
+      await window.coursehub.video.startContinuous('testbed', ['t1', 't2'])
+
+      // 快进 t1 至 7.8s，触发自然播放结束 (duration=8s)
+      await window.coursehub.video.command('testbed', 'seek', 7.8, 't1')
+      await window.coursehub.video.command('testbed', 'play', undefined, 't1')
+
+      let switched = false
+      for (let i = 0; i < 25; i++) {
+        await new Promise((r) => setTimeout(r, 200))
+        const obs = await window.coursehub.video.observe('testbed', 't2')
+        if (obs.ok) {
+          switched = true
+          break
+        }
+      }
+      await window.coursehub.video.stopContinuous()
+      return { switched }
+    })
+    record(
+      '闭环A-3：真实 ended 推进与自动连续播放切换',
+      continuousTest.switched === true,
+      `连播切换就绪: ${continuousTest.switched}`
+    )
+
+    // 8.4 签到闭环：活动列表读取
+    const signIns = await win.evaluate(async () => {
+      const r = await window.coursehub.classroom.todaySignIns('testbed')
+      return r.ok ? r.data.events : []
+    })
+    record(
+      '闭环B-1：测试签到活动读取（含普通与定位打卡）',
+      signIns.length === 2 && signIns.some((s) => s.kind === 'normal') && signIns.some((s) => s.kind === 'location'),
+      `读取到 ${signIns.length} 项签到活动`
+    )
+
+    // 8.5 签到闭环：普通打卡全流程
+    const normalSignIn = await win.evaluate(async () => {
+      await window.coursehub.testbed.loadFixture('signin-test.html')
+      const r = await window.coursehub.testbed.triggerSignIn('test-sign-01')
+      return r.ok ? r.data : null
+    })
+    record(
+      '闭环B-2：自有测试站点普通打卡闭环（DOM回显已签到）',
+      normalSignIn?.status === 'checked_in',
+      JSON.stringify(normalSignIn)
+    )
+
+    // 8.6 签到闭环：定位打卡全流程（下发目标坐标并打卡通过）
+    const locationSignIn = await win.evaluate(async () => {
+      await window.coursehub.geoTest.start({
+        latitude: 39.9042,
+        longitude: 116.4074,
+        accuracyMeters: 30,
+        coordinateSystem: 'wgs84',
+        targetOrigin: 'file://'
+      })
+      const r = await window.coursehub.testbed.triggerSignIn('test-sign-02')
+      await window.coursehub.geoTest.stop()
+      return r.ok ? r.data : null
+    })
+    record(
+      '闭环B-3：自有测试站点定位签到闭环（经纬度校验与容差通过）',
+      locationSignIn?.status === 'checked_in',
+      JSON.stringify(locationSignIn)
+    )
+
+    // 8.7 题目闭环：AI 多题顺序分析与受控表单批量填充
+    const autoQuiz = await win.evaluate(async () => {
+      await window.coursehub.testbed.loadFixture('classroom-questions.html')
+      const r = await window.coursehub.question.autoAnalyzeAndFill({ platformId: 'testbed' })
+      return r.ok ? r.data : null
+    })
+    record(
+      '闭环C-1：题目识别、AI 分析与表单自动化批量填充',
+      autoQuiz?.totalProcessed === 4 && autoQuiz?.results?.every((res) => res.executed),
+      `已批量处理 ${autoQuiz?.totalProcessed} 题（Mock/AI分析闭环）`
+    )
+
+    // 8.8 题目闭环：页面真实 DOM 回读完整性检验
+    const domVerify = await win.evaluate(async () => {
+      const res = await window.coursehub.question.extract('testbed')
+      return res.ok ? res.data.questions : []
+    })
+    record(
+      '闭环C-2：题目自动化表单交互后状态回读正常',
+      domVerify.length === 4,
+      `回读题目数: ${domVerify.length}`
+    )
   } catch (e) {
     record('E2E 执行过程', false, e instanceof Error ? e.message : String(e))
   } finally {

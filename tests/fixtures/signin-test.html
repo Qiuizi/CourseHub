@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>CourseHub 自有测试站点 · 签到中心 Fixture</title>
+    <style>
+      body { font-family: system-ui, sans-serif; background: #0b0f19; color: #e6edf7; margin: 0; padding: 24px; }
+      h1 { font-size: 18px; margin: 0 0 6px; }
+      .sub { font-size: 12px; color: #64748b; margin-bottom: 20px; }
+      .card { border: 1px solid #223049; border-radius: 12px; padding: 16px; margin-bottom: 16px; background: #111827; }
+      .card h2 { font-size: 15px; margin: 0 0 8px; display: flex; justify-content: space-between; align-items: center; }
+      .badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 500; }
+      .badge-open { background: #0369a1; color: #bae6fd; }
+      .badge-done { background: #065f46; color: #a7f3d0; }
+      .badge-fail { background: #881337; color: #fecdd3; }
+      .meta { font-size: 12px; color: #94a3b8; margin-bottom: 12px; line-height: 1.6; }
+      button { background: #0284c7; color: #fff; border: 0; padding: 8px 16px; border-radius: 6px; font-weight: 500; cursor: pointer; }
+      button:hover { background: #0369a1; }
+      button:disabled { background: #334155; cursor: not-allowed; }
+      .result-box { margin-top: 10px; font-size: 12px; font-family: ui-monospace, monospace; padding: 8px 12px; border-radius: 6px; background: #0b0f19; border: 1px solid #1e293b; }
+      .success-text { color: #34d399; }
+      .error-text { color: #f87171; }
+    </style>
+  </head>
+  <body>
+    <h1>自有测试站点 · 签到检测与定位验证 Fixture</h1>
+    <div class="sub">
+      用于端到端验证普通打卡与地理位置打卡流程。本页运行在独立测试 Session 中，不产生任何真实平台出勤记录。
+    </div>
+
+    <!-- 活动 1: 普通即时签到 -->
+    <div class="card" id="card-act-01" data-signin-id="test-sign-01">
+      <h2>
+        <span>1. 随堂测试 · 普通快速打卡</span>
+        <span class="badge badge-open" id="badge-01">进行中</span>
+      </h2>
+      <div class="meta">
+        <div>活动类型：普通打卡 | 截止时间：20 分钟后</div>
+        <div>无需地理位置授权，点击即可确认出勤。</div>
+      </div>
+      <button type="button" id="btn-01" onclick="handleNormalSignIn()">立即签到</button>
+      <div class="result-box" id="res-01">状态：等待签到</div>
+    </div>
+
+    <!-- 活动 2: 定位范围签到 -->
+    <div class="card" id="card-act-02" data-signin-id="test-sign-02">
+      <h2>
+        <span>2. 随堂测试 · 现场定位签到</span>
+        <span class="badge badge-open" id="badge-02">进行中</span>
+      </h2>
+      <div class="meta">
+        <div>活动类型：定位打卡 | 中心点：北京天安门（39.9042, 116.4074）</div>
+        <div>允许有效半径：500 米 | 依赖 navigator.geolocation API</div>
+      </div>
+      <button type="button" id="btn-02" onclick="handleLocationSignIn()">获取位置并签到</button>
+      <div class="result-box" id="res-02">状态：等待签到（请先通过 CourseHub 下发模拟坐标）</div>
+    </div>
+
+    <script>
+      // 距离计算：Haversine
+      function getDistanceMeters(lat1, lon1, lat2, lon2) {
+        const R = 6371000;
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                  Math.sin(dLon/2) * Math.sin(dLon/2);
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+      }
+
+      const TARGET_LAT = 39.9042;
+      const TARGET_LON = 116.4074;
+      const ALLOWED_RADIUS = 500;
+
+      window.__chSignInState = {
+        'test-sign-01': { status: 'open', message: '等待签到', time: null },
+        'test-sign-02': { status: 'open', message: '等待签到', time: null, distance: null, coords: null }
+      };
+
+      function handleNormalSignIn() {
+        const btn = document.getElementById('btn-01');
+        const badge = document.getElementById('badge-01');
+        const res = document.getElementById('res-01');
+        btn.disabled = true;
+        badge.className = 'badge badge-done';
+        badge.textContent = '已签到';
+        res.innerHTML = '<span class="success-text">签到成功！服务器已确认出勤（普通签到）。</span>';
+        window.__chSignInState['test-sign-01'] = {
+          status: 'checked_in',
+          message: '签到成功',
+          time: new Date().toISOString()
+        };
+      }
+
+      function handleLocationSignIn() {
+        const btn = document.getElementById('btn-02');
+        const badge = document.getElementById('badge-02');
+        const res = document.getElementById('res-02');
+        res.textContent = '正在读取浏览器地理位置…';
+        btn.disabled = true;
+
+        if (!navigator.geolocation) {
+          res.innerHTML = '<span class="error-text">失败：当前环境不支持 navigator.geolocation</span>';
+          badge.className = 'badge badge-fail';
+          badge.textContent = '失败';
+          btn.disabled = false;
+          return;
+        }
+
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            const lat = pos.coords.latitude;
+            const lon = pos.coords.longitude;
+            const acc = pos.coords.accuracy;
+            const dist = getDistanceMeters(lat, lon, TARGET_LAT, TARGET_LON);
+
+            if (dist <= ALLOWED_RADIUS) {
+              badge.className = 'badge badge-done';
+              badge.textContent = '已签到';
+              res.innerHTML = `<span class="success-text">签到成功！当前坐标 (${lat.toFixed(4)}, ${lon.toFixed(4)}) 距离目标点 ${dist.toFixed(1)}m (容差 ${ALLOWED_RADIUS}m)，精度 ${acc}m。</span>`;
+              window.__chSignInState['test-sign-02'] = {
+                status: 'checked_in',
+                message: '定位签到成功',
+                time: new Date().toISOString(),
+                coords: { latitude: lat, longitude: lon, accuracy: acc },
+                distance: dist
+              };
+            } else {
+              badge.className = 'badge badge-fail';
+              badge.textContent = '打卡失败';
+              res.innerHTML = `<span class="error-text">位置超出范围！当前坐标 (${lat.toFixed(4)}, ${lon.toFixed(4)}) 距离目标点 ${dist.toFixed(1)}m，超过允许范围 ${ALLOWED_RADIUS}m。</span>`;
+              btn.disabled = false;
+              window.__chSignInState['test-sign-02'] = {
+                status: 'failed',
+                message: `超出范围 (${dist.toFixed(1)}m > ${ALLOWED_RADIUS}m)`,
+                time: new Date().toISOString(),
+                coords: { latitude: lat, longitude: lon, accuracy: acc },
+                distance: dist
+              };
+            }
+          },
+          (err) => {
+            btn.disabled = false;
+            badge.className = 'badge badge-fail';
+            badge.textContent = '定位失败';
+            res.innerHTML = `<span class="error-text">获取定位失败：[错误码 ${err.code}] ${err.message}</span>`;
+            window.__chSignInState['test-sign-02'] = {
+              status: 'failed',
+              message: `定位失败: ${err.message}`,
+              time: new Date().toISOString()
+            };
+          },
+          { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
+        );
+      }
+
+      window.__chTriggerSignIn = (id) => {
+        if (id === 'test-sign-01') handleNormalSignIn();
+        if (id === 'test-sign-02') handleLocationSignIn();
+      };
+      window.__chSignInReady = true;
+    </script>
+  </body>
+</html>

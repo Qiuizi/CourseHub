@@ -58,7 +58,8 @@ export function VideoScene({
   onCommand,
   onVolumeChange,
   onRateChange,
-  onLoadFixture
+  onLoadFixture,
+  onSimulateLifecycle
 }: {
   platformName: string
   observation: PlaybackObservation | null
@@ -78,6 +79,7 @@ export function VideoScene({
   onVolumeChange: (v: number) => void
   onRateChange: (v: number) => void
   onLoadFixture: () => void
+  onSimulateLifecycle?: (input: { visibility?: 'visible' | 'hidden'; focus?: 'focus' | 'blur' }) => void
 }): ReactNode {
   const pct = observedProgressPercent(observation)
   const isPlaying = observation?.playerState === 'playing'
@@ -453,6 +455,51 @@ export function VideoScene({
               </Notice>
             </div>
           )}
+
+          {/* 页面生命周期与失焦测试 */}
+          <div style={{ marginTop: 14 }}>
+            <Card title="生命周期与失焦测试（测试台）">
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{ fontSize: 11, flex: 1 }}
+                    onClick={() => onSimulateLifecycle?.({ focus: 'blur' })}
+                  >
+                    模拟失焦 (Blur)
+                  </button>
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{ fontSize: 11, flex: 1 }}
+                    onClick={() => onSimulateLifecycle?.({ visibility: 'hidden' })}
+                  >
+                    切入后台 (Hidden)
+                  </button>
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{ fontSize: 11, flex: 1 }}
+                    onClick={() => onSimulateLifecycle?.({ visibility: 'visible', focus: 'focus' })}
+                  >
+                    恢复前台 (Visible)
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    style={{ fontSize: 11, flex: 1 }}
+                    onClick={() => onCommand('seek', 7.5)}
+                    title="跳转到 7.5s 快速验证自然 ended 连播"
+                  >
+                    快进至 7.5s
+                  </button>
+                </div>
+              </div>
+            </Card>
+          </div>
         </Card>
       </div>
     </div>

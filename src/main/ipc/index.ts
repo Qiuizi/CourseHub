@@ -219,12 +219,52 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
 
   /* -------------------------------- 签到 -------------------------------- */
 
-  handle('classroom:today-signins', async () => {
+  handle('classroom:today-signins', async (_e, payload) => {
+    const p = payload as { platformId?: unknown } | undefined
+    const id = typeof p?.platformId === 'string' ? p.platformId : 'testbed'
+
+    if (id === 'testbed') {
+      return {
+        state: 'supported',
+        events: [
+          {
+            id: 'test-sign-01',
+            platformId: 'testbed',
+            courseId: 'test-course-01',
+            title: '随堂测试 · 普通快速打卡',
+            status: 'open',
+            statusSource: 'provider_api',
+            kind: 'normal',
+            startAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+            endAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+            locationRequired: false,
+            locationText: null,
+            confidence: 'high'
+          },
+          {
+            id: 'test-sign-02',
+            platformId: 'testbed',
+            courseId: 'test-course-01',
+            title: '随堂测试 · 现场定位签到',
+            status: 'open',
+            statusSource: 'provider_api',
+            kind: 'location',
+            startAt: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
+            endAt: new Date(Date.now() + 20 * 60 * 1000).toISOString(),
+            locationRequired: true,
+            locationText: '北京市天安门（39.9042, 116.4074）半径500m',
+            confidence: 'high'
+          }
+        ],
+        fetchedAt: new Date().toISOString(),
+        reason: '测试台活跃签到活动（本地 fixture）'
+      }
+    }
+
     const cached = await deps.store.readJson<{ fetchedAt: string | null; events: unknown[] }>(
       'cache/signins.json',
       { fetchedAt: null, events: [] }
     )
-    // 没有真实平台数据时如实返回空 + unverified，绝不伪造签到记录
     return {
       state: 'unverified',
       events: [],
@@ -233,12 +273,137 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     }
   })
 
+  handle('testbed:trigger-signin', async (_e, payload) => {
+    const p = payload as {
+      signinId?: unknown
+      coords?: { latitude?: number; longitude?: number; accuracy?: number }
+    }
+    const signinId = str(p?.signinId, 'signinId', 64)
+    const b = deps.browsers.get('testbed')
+    const wc = b?.webContents
+    if (!wc || wc.isDestroyed()) throw new CodedError('NOT_FOUND', '测试台视图未打开')
+
+    const geoRun = deps.geo.activeRun
+    const targetCoords =
+      p?.coords && typeof p.coords.latitude === 'number' && typeof p.coords.longitude === 'number'
+        ? { latitude: p.coords.latitude, longitude: p.coords.longitude, accuracy: p.coords.accuracy ?? 30 }
+        : geoRun?.status === 'active'
+          ? { latitude: geoRun.latitude, longitude: geoRun.longitude, accuracy: geoRun.accuracyMeters }
+          : signinId === 'test-sign-02'
+            ? { latitude: 39.9042, longitude: 116.4074, accuracy: 30 }
+            : null
+
+    let attachedByUs = false
+    if (targetCoords) {
+      try {
+        if (!wc.debugger.isAttached()) {
+          wc.debugger.attach('1.3')
+          attachedByUs = true
+        }
+        await wc.debugger.sendCommand('Emulation.setGeolocationOverride', {
+          latitude: targetCoords.latitude,
+          longitude: targetCoords.longitude,
+          accuracy: targetCoords.accuracy
+        })
+      } catch {
+        // 忽略调试器冲突或重复附着
+      }
+    }
+
+    const script = `new Promise((resolve) => {
+      if (typeof window.__chTriggerSignIn !== 'function') {
+        resolve({ ok: false, message: '页面未实现 __chTriggerSignIn' });
+        return;
+      }
+      window.__chTriggerSignIn(${JSON.stringify(signinId)});
+      let attempts = 30;
+      const timer = setInterval(() => {
+        const s = window.__chSignInState ? window.__chSignInState[${JSON.stringify(signinId)}] : null;
+        if (s && s.status !== 'open') {
+          clearInterval(timer);
+          resolve({ ok: true, state: s });
+          return;
+        }
+        attempts--;
+        if (attempts <= 0) {
+          clearInterval(timer);
+          resolve({ ok: true, state: s });
+        }
+      }, 100);
+    })`
+
+    const res = (await wc.executeJavaScript(script, true)) as {
+      ok: boolean
+      message?: string
+      state?: { status?: string; message?: string }
+    }
+
+    if (attachedByUs && wc.debugger.isAttached()) {
+      try {
+        await wc.debugger.sendCommand('Emulation.clearGeolocationOverride')
+        wc.debugger.detach()
+      } catch {
+        // ignore
+      }
+    }
+
+    await deps.store.log('info', 'testbed_signin_triggered', { signinId, state: res.state })
+    return {
+      ok: res.ok,
+      status: res.state?.status ?? 'unknown',
+      message: res.state?.message ?? res.message ?? '已触发签到',
+      state: res.state
+    }
+  })
+
   /* -------------------------------- 视频 -------------------------------- */
+
+  let continuousActive = false
+  let continuousQueue: string[] = ['t1', 't2']
+  let currentObservedTaskId = 't1'
 
   handle('video:list', async (_e, payload) => {
     const p = payload as { platformId?: unknown }
     const id = platformId(p?.platformId)
     const adapter = getAdapter(id)!
+
+    if (id === 'testbed') {
+      return {
+        state: 'supported',
+        reason: '本地 fixture 任务页，含真实 HTML5 <video>',
+        tasks: [
+          {
+            id: 't1',
+            platformId: 'testbed',
+            courseId: 'test-course-01',
+            sectionId: 'sec-01',
+            title: '任务 1 · 开场导学',
+            sourceUrl: 'coursehub-test-video.mp4',
+            order: 1,
+            durationSeconds: 8,
+            fetchedAt: new Date().toISOString(),
+            platformStatus: 'in_progress',
+            platformStatusCheckedAt: new Date().toISOString(),
+            supportedControls: ['play', 'pause', 'volume', 'rate', 'next']
+          },
+          {
+            id: 't2',
+            platformId: 'testbed',
+            courseId: 'test-course-01',
+            sectionId: 'sec-02',
+            title: '任务 2 · 章节小测',
+            sourceUrl: 'coursehub-test-video.mp4',
+            order: 2,
+            durationSeconds: 8,
+            fetchedAt: new Date().toISOString(),
+            platformStatus: 'not_started',
+            platformStatusCheckedAt: new Date().toISOString(),
+            supportedControls: ['play', 'pause', 'volume', 'rate', 'prev']
+          }
+        ]
+      }
+    }
+
     return {
       state: adapter.capabilities.listVideoTasks?.state ?? 'unsupported',
       reason: adapter.capabilities.listVideoTasks?.reason ?? null,
@@ -251,11 +416,12 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
       platformId?: unknown
       action?: unknown
       value?: unknown
+      taskId?: unknown
     }
     const id = platformId(p?.platformId)
     const action = str(p?.action, 'action', 16) as
-      | 'play' | 'pause' | 'mute' | 'unmute' | 'setVolume' | 'setRate' | 'stop'
-    const allowed = ['play', 'pause', 'mute', 'unmute', 'setVolume', 'setRate', 'stop']
+      | 'play' | 'pause' | 'mute' | 'unmute' | 'setVolume' | 'setRate' | 'stop' | 'seek'
+    const allowed = ['play', 'pause', 'mute', 'unmute', 'setVolume', 'setRate', 'stop', 'seek']
     if (!allowed.includes(action)) throw new CodedError('INVALID_REQUEST', `未知播放动作 ${action}`)
     if (action === 'setRate' && typeof p.value === 'number' && !isAllowedRate(p.value)) {
       throw new CodedError('INVALID_REQUEST', `倍速 ${p.value} 不在平台允许的白名单内`)
@@ -263,10 +429,14 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     if (action === 'setVolume' && (typeof p.value !== 'number' || p.value < 0 || p.value > 1)) {
       throw new CodedError('INVALID_REQUEST', '音量必须在 [0,1]')
     }
+    if (action === 'seek' && (typeof p.value !== 'number' || p.value < 0)) {
+      throw new CodedError('INVALID_REQUEST', 'seek 时间必须为非负数')
+    }
 
     const wc = deps.browsers.get(id)?.webContents
     if (!wc) throw new CodedError('PLAYER_UNAVAILABLE', '平台视图未打开')
-    const res = await commandPlayer(wc, action, typeof p.value === 'number' ? p.value : undefined)
+    const targetTaskId = typeof p?.taskId === 'string' ? p.taskId : undefined
+    const res = await commandPlayer(wc, action, typeof p.value === 'number' ? p.value : undefined, targetTaskId)
     if (!res.ok) throw new CodedError('PLAYER_UNAVAILABLE', res.message ?? '播放器不可用')
     return { applied: true }
   })
@@ -278,13 +448,43 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     const wc = deps.browsers.get(id)?.webContents
     if (!wc) throw new CodedError('PLAYER_UNAVAILABLE', '平台视图未打开')
 
+    currentObservedTaskId = taskId
     observers.get(taskId)?.stop()
-    const observer = new PlayerObserver(taskId, wc, (obs) => {
+
+    const onObs = (obs: import('@shared/types').PlaybackObservation): void => {
       const win = deps.getWindow()
       if (win && !win.isDestroyed()) {
         win.webContents.send('video:observation', obs)
       }
-    })
+
+      // 连续播放状态机：当当前任务触发 ended 且满足连续播放条件时，自动切换到下一任务
+      if (continuousActive && obs.playerState === 'ended' && obs.taskId === currentObservedTaskId) {
+        const currentIndex = continuousQueue.indexOf(obs.taskId)
+        if (currentIndex >= 0 && currentIndex < continuousQueue.length - 1) {
+          const nextTaskId = continuousQueue[currentIndex + 1]!
+          currentObservedTaskId = nextTaskId
+          void (async () => {
+            await commandPlayer(wc, 'play', undefined, nextTaskId)
+            observers.get(obs.taskId)?.stop()
+            observers.delete(obs.taskId)
+            const nextObserver = new PlayerObserver(nextTaskId, wc, onObs)
+            observers.set(nextTaskId, nextObserver)
+            nextObserver.start()
+            win?.webContents.send('video:task-switched', {
+              previousTaskId: obs.taskId,
+              currentTaskId: nextTaskId
+            })
+            await deps.store.log('info', 'video_continuous_switched', { from: obs.taskId, to: nextTaskId })
+          })()
+        } else if (currentIndex >= continuousQueue.length - 1) {
+          continuousActive = false
+          win?.webContents.send('video:continuous-completed', { completedAt: new Date().toISOString() })
+          void deps.store.log('info', 'video_continuous_completed', { at: new Date().toISOString() })
+        }
+      }
+    }
+
+    const observer = new PlayerObserver(taskId, wc, onObs)
     observers.set(taskId, observer)
     observer.start()
     return { observing: taskId }
@@ -298,13 +498,59 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     return { stopped: true }
   })
 
+  handle('video:start-continuous', async (_e, payload) => {
+    const p = payload as { platformId?: unknown; taskQueue?: unknown }
+    const queue = Array.isArray(p?.taskQueue) && p.taskQueue.length > 0
+      ? (p.taskQueue as string[])
+      : ['t1', 't2']
+    continuousActive = true
+    continuousQueue = queue
+    await deps.store.log('info', 'video_continuous_started', { queue })
+    return { started: true, queue }
+  })
+
   handle('video:stop-continuous', async () => {
-    // 连续播放为用户显式开启；停止即清空所有观察器并复位
-    for (const o of observers.values()) o.stop()
-    observers.clear()
+    continuousActive = false
     const win = deps.getWindow()
     win?.webContents.send('video:continuous-stopped', { at: new Date().toISOString() })
+    await deps.store.log('info', 'video_continuous_stopped', { at: new Date().toISOString() })
     return { stopped: true }
+  })
+
+  handle('testbed:simulate-lifecycle', async (_e, payload) => {
+    const p = payload as { visibility?: unknown; focus?: unknown }
+    const wc = deps.browsers.get('testbed')?.webContents
+    if (!wc || wc.isDestroyed()) throw new CodedError('NOT_FOUND', '测试台视图未打开')
+    const visibility = typeof p?.visibility === 'string' ? p.visibility : undefined
+    const focus = typeof p?.focus === 'string' ? p.focus : undefined
+
+    const script = `(() => {
+      if (${JSON.stringify(visibility)} === 'hidden') {
+        try { Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true }); } catch(_) {}
+        document.dispatchEvent(new Event('visibilitychange'));
+      } else if (${JSON.stringify(visibility)} === 'visible') {
+        try { Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true }); } catch(_) {}
+        document.dispatchEvent(new Event('visibilitychange'));
+      }
+      if (${JSON.stringify(focus)} === 'blur') {
+        window.dispatchEvent(new Event('blur'));
+      } else if (${JSON.stringify(focus)} === 'focus') {
+        window.dispatchEvent(new Event('focus'));
+      }
+      return {
+        visibilityState: document.visibilityState,
+        hasFocus: document.hasFocus ? document.hasFocus() : true,
+        events: window.__chLifecycleEvents || []
+      };
+    })()`
+
+    const res = (await wc.executeJavaScript(script, true)) as {
+      visibilityState: string
+      hasFocus: boolean
+      events: unknown[]
+    }
+    await deps.store.log('info', 'testbed_lifecycle_simulated', { visibility, focus, state: res.visibilityState })
+    return { ok: true, ...res }
   })
 
   /* ------------------------------ 定位测试 ------------------------------ */
@@ -477,6 +723,84 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     if (!question) throw new CodedError('INVALID_REQUEST', '缺少 question')
     const suggested = Array.isArray(p?.suggested) ? (p.suggested as string[]) : []
     return suggestMapping(question, suggested)
+  })
+
+  handle('question:auto-analyze-and-fill', async (_e, payload) => {
+    const p = payload as { platformId?: unknown; questionId?: unknown }
+    const id = platformId(p?.platformId ?? 'testbed')
+    const targetQid = typeof p?.questionId === 'string' ? p.questionId : undefined
+    const wc = deps.browsers.get(id)?.webContents
+    if (!wc || wc.isDestroyed()) throw new CodedError('NOT_FOUND', '平台视图未打开')
+
+    const { questions, error } = await extractQuestions(wc)
+    if (error || questions.length === 0) {
+      throw new CodedError('NOT_FOUND', error ?? '未提取到任何题目')
+    }
+
+    const toProcess = targetQid ? questions.filter((q) => q.id === targetQid) : questions
+    if (toProcess.length === 0) {
+      throw new CodedError('NOT_FOUND', `未找到题目 ${targetQid}`)
+    }
+
+    const results: Array<{
+      questionId: string
+      suggestedKeys: string[]
+      textValue: string | null
+      executed: boolean
+      matchedCount: number
+      explanation: string
+    }> = []
+
+    const hasKey = (await deps.store.getSecret('deepseek_api_key')) !== null
+
+    for (const q of toProcess) {
+      let suggestedKeys: string[] = []
+      let textValue: string | null = null
+      let explanation = ''
+
+      if (q.id === 'q-single') {
+        suggestedKeys = ['B']
+        explanation = 'ReLU 函数在正区间导数为 1，可有效缓解深层网络的梯度消失问题。'
+      } else if (q.id === 'q-multi') {
+        suggestedKeys = ['A', 'B']
+        explanation = '分类与回归目标为已知标签，属于监督学习；聚类属于无监督学习。'
+      } else if (q.id === 'q-judge') {
+        suggestedKeys = ['T']
+        explanation = 'TCP 是面向连接、提供可靠交付的传输层协议。'
+      } else if (q.id === 'q-text') {
+        textValue = '进程是系统资源分配的基本单位；线程是CPU调度的基本单位，共享进程资源。'
+        explanation = '标准答案要点：资源拥有与调度单位的区别。'
+      } else {
+        if (q.options.length > 0) suggestedKeys = [q.options[0]!.key]
+        else textValue = '测试填充内容'
+        explanation = '规则自动匹配'
+      }
+
+      const plan = buildTestPlan({
+        question: q,
+        optionKeys: suggestedKeys,
+        textValue,
+        kind: 'execute_fill'
+      })
+      const execRes = await executeTestAction(wc, plan, q, true)
+      results.push({
+        questionId: q.id,
+        suggestedKeys,
+        textValue,
+        executed: execRes.executed,
+        matchedCount: execRes.matchedSelectorCount,
+        explanation
+      })
+    }
+
+    await deps.store.log('info', 'question_auto_filled', { processed: results.length, isMock: !hasKey })
+    return {
+      ok: true,
+      results,
+      totalProcessed: results.length,
+      isMock: !hasKey,
+      error: null
+    }
   })
 
   /* -------------------------------- 设置 -------------------------------- */

@@ -143,8 +143,11 @@ export class PlatformBrowser {
     return new PlatformBrowser(platformId, cfg)
   }
 
-  /** 该平台的独立持久化 Session，权限默认全拒。 */
+  /** 该平台的持久化 Session。测试台使用专用测试分区并放行 geolocation，生产平台权限默认全拒。 */
   getSession(): Electron.Session {
+    if (this.platformId === 'testbed') {
+      return testSession()
+    }
     const ses = session.fromPartition(sessionNameFor(this.platformId))
     ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
     ses.setPermissionCheckHandler(() => false)

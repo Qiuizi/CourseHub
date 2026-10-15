@@ -26,6 +26,17 @@ export function QuizScene({ onAskAi, onGoExtract }: QuizSceneProps): ReactNode {
   const [questions, setQuestions] = useState<ClassroomQuestion[]>([])
   const [msg, setMsg] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [autoRunning, setAutoRunning] = useState(false)
+  const [batchReport, setBatchReport] = useState<
+    Array<{
+      questionId: string
+      suggestedKeys: string[]
+      textValue: string | null
+      executed: boolean
+      matchedCount: number
+      explanation: string
+    }>
+  | null>(null)
 
   const extract = useCallback(async () => {
     setLoading(true)
@@ -43,6 +54,22 @@ export function QuizScene({ onAskAi, onGoExtract }: QuizSceneProps): ReactNode {
     }
   }, [])
 
+  const handleAutoAnalyze = async () => {
+    setAutoRunning(true)
+    setMsg(null)
+    try {
+      const res = await window.coursehub.question.autoAnalyzeAndFill({ platformId: 'testbed' })
+      if (res.ok) {
+        setBatchReport(res.data.results as any)
+        setMsg(`自动化交互完成：共处理 ${res.data.totalProcessed} 道题目，页面表单已受控更新（${res.data.isMock ? '本地规范 Mock 分析' : 'DeepSeek 实时分析'}）。`)
+      } else {
+        setMsg(`自动化交互失败：${res.error.message}`)
+      }
+    } finally {
+      setAutoRunning(false)
+    }
+  }
+
   useEffect(() => {
     void extract()
   }, [extract])
@@ -50,12 +77,30 @@ export function QuizScene({ onAskAi, onGoExtract }: QuizSceneProps): ReactNode {
   return (
     <div style={{ maxWidth: 880, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Card
-        title="课堂练习检测"
+        title="课堂练习检测与自动化测试"
         action={
-          <button type="button" className="btn" onClick={() => void extract()} disabled={loading} data-testid="quiz-refresh">
-            <RefreshCw size={13} className={loading ? 'spin' : undefined} />
-            重新提取
-          </button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => void handleAutoAnalyze()}
+              disabled={loading || autoRunning}
+              data-testid="quiz-auto-run"
+            >
+              <Sparkles size={13} className={autoRunning ? 'spin' : undefined} />
+              {autoRunning ? '正在分析填充…' : 'AI 分析并自动填充测试页'}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => void extract()}
+              disabled={loading || autoRunning}
+              data-testid="quiz-refresh"
+            >
+              <RefreshCw size={13} className={loading ? 'spin' : undefined} />
+              重新提取
+            </button>
+          </div>
         }
       >
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
@@ -135,6 +180,39 @@ export function QuizScene({ onAskAi, onGoExtract }: QuizSceneProps): ReactNode {
           </ul>
         )}
       </Card>
+
+      {batchReport && (
+        <Card title="测试自动化交互执行报告">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {batchReport.map((r, idx) => (
+              <div
+                key={r.questionId}
+                style={{
+                  padding: 12,
+                  borderRadius: 'var(--r-block)',
+                  background: 'var(--ch-subtle)',
+                  border: '1px solid var(--ch-border)',
+                  fontSize: 12
+                }}
+                data-testid={`batch-item-${r.questionId}`}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <strong>第 {idx + 1} 题（{r.questionId}）</strong>
+                  <span className="chip chip-emerald">{r.executed ? '已成功填入 DOM' : '未执行'}</span>
+                </div>
+                <div style={{ color: 'var(--ch-text-2)', marginBottom: 4 }}>
+                  {r.suggestedKeys.length > 0 && `拟选选项: [${r.suggestedKeys.join(', ')}]`}
+                  {r.textValue && `填空文本: "${r.textValue}"`}
+                  {` (匹配节点数: ${r.matchedCount})`}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--ch-text-3)' }}>
+                  解析要点: {r.explanation}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       <Card title="使用边界">
         <Notice tone="warn">
