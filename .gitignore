@@ -1,0 +1,21 @@
+# 依赖与构建产物
+node_modules/
+out/
+release/
+release-verify/
+dist/
+
+# TypeScript 增量编译缓存
+*.tsbuildinfo
+
+# 测试媒体素材由 ffmpeg 生成，不入库（见 docs/验收记录.md 复现命令）
+tests/fixtures/*.mp4
+
+# 日志与临时文件
+*.log
+npm-debug.log*
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store

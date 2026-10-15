@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>CourseHub 视频任务 Fixture</title>
+    <style>
+      body { font-family: system-ui, sans-serif; background: #0b0f19; color: #e6edf7; margin: 0; padding: 24px; }
+      h1 { font-size: 18px; margin: 0 0 6px; }
+      .sub { font-size: 12px; color: #64748b; margin-bottom: 16px; }
+      .task { border: 1px solid #223049; border-radius: 8px; padding: 16px; margin-bottom: 16px; background: #111827; }
+      video { width: 480px; max-width: 100%; background: #000; border-radius: 6px; }
+      .status { font-size: 12px; margin-top: 8px; font-family: ui-monospace, monospace; color: #6ee7b7; }
+    </style>
+  </head>
+  <body>
+    <h1>测试视频任务（本地 fixture · 真实 MP4 / HTML5 &lt;video&gt;）</h1>
+    <div class="sub">
+      使用 ffmpeg 生成的真实 8 秒 H.264 MP4，可真实观测 duration / currentTime / ended。
+      本页不属于任何真实平台，不产生任何学习记录。
+    </div>
+
+    <div class="task" data-task="t1">
+      <div>任务 1 · 开场导学（8 秒）</div>
+      <video id="v1" src="coursehub-test-video.mp4" preload="auto" muted playsinline></video>
+      <div class="status" id="s1">state: loading</div>
+    </div>
+
+    <div class="task" data-task="t2">
+      <div>任务 2 · 章节小测（同一素材，用于验证上一/下一任务切换）</div>
+      <video id="v2" src="coursehub-test-video.mp4" preload="auto" muted playsinline></video>
+      <div class="status" id="s2">state: loading</div>
+    </div>
+
+    <script>
+      const tasks = [
+        { id: 't1', el: document.getElementById('v1'), status: document.getElementById('s1') },
+        { id: 't2', el: document.getElementById('v2'), status: document.getElementById('s2') }
+      ]
+
+      function refresh(t) {
+        const v = t.el
+        const state = v.error
+          ? 'error'
+          : v.ended
+            ? 'ended'
+            : v.seeking || (v.readyState >= 2 && v.readyState <= 3 && v.paused)
+              ? 'buffering'
+              : v.paused
+                ? 'paused'
+                : 'playing'
+        const d = Number.isFinite(v.duration) && v.duration > 0 ? v.duration.toFixed(2) : 'null'
+        t.status.textContent =
+          'state: ' + state +
+          ' | t=' + (v.currentTime || 0).toFixed(2) + '/' + d +
+          ' | rate=' + v.playbackRate + ' | vol=' + v.volume.toFixed(2) + ' | muted=' + v.muted
+      }
+
+      for (const t of tasks) {
+        for (const ev of ['loadedmetadata', 'play', 'pause', 'ended', 'waiting', 'canplay', 'ratechange', 'volumechange', 'error', 'seeked']) {
+          t.el.addEventListener(ev, () => refresh(t))
+        }
+      }
+
+      // 供 E2E 与 UI 读取
+      window.__chTasks = tasks
+      window.__chReady = tasks.every((t) => t.el.readyState >= 1)
+      window.__chRefresh = () => tasks.forEach(refresh)
+
+      // 元数据就绪后刷新一次
+      let loaded = 0
+      for (const t of tasks) {
+        if (t.el.readyState >= 1) {
+          refresh(t)
+          loaded++
+        } else {
+          t.el.addEventListener('loadedmetadata', () => {
+            refresh(t)
+            loaded++
+            if (loaded === tasks.length) window.__chReady = true
+          }, { once: true })
+        }
+      }
+      if (loaded === tasks.length) window.__chReady = true
+    </script>
+  </body>
+</html>

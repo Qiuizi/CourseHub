@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>CourseHub 定位测试 Fixture</title>
+    <style>
+      body { font-family: system-ui, sans-serif; background: #0b0f19; color: #e6edf7; margin: 0; padding: 24px; }
+      .card { border: 1px solid #223049; border-radius: 8px; padding: 16px; background: #111827; max-width: 640px; }
+      h1 { font-size: 18px; margin: 0 0 12px; }
+      dl { display: grid; grid-template-columns: 140px 1fr; gap: 6px 12px; font-size: 14px; }
+      dt { color: #93a4bd; }
+      dd { margin: 0; font-family: ui-monospace, monospace; color: #6ee7b7; }
+      button { margin-top: 14px; padding: 8px 14px; border-radius: 6px; border: 1px solid #334155;
+               background: #1e293b; color: #e6edf7; cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>定位测试页（独立 fixture · 不属于任何真实平台）</h1>
+      <p style="font-size:13px;color:#93a4bd">
+        本页仅验证 Web Geolocation API 的返回与权限行为，不写入任何平台出勤记录。
+      </p>
+      <dl>
+        <dt>状态</dt><dd id="status">未读取</dd>
+        <dt>latitude</dt><dd id="lat">-</dd>
+        <dt>longitude</dt><dd id="lon">-</dd>
+        <dt>accuracy (m)</dt><dd id="acc">-</dd>
+        <dt>时间戳</dt><dd id="ts">-</dd>
+        <dt>权限状态</dt><dd id="perm">-</dd>
+      </dl>
+      <button id="read">读取当前位置</button>
+    </div>
+
+    <script>
+      const el = (id) => document.getElementById(id)
+      function setReadout(loc) {
+        el('status').textContent = '已读取'
+        el('lat').textContent = String(loc.latitude)
+        el('lon').textContent = String(loc.longitude)
+        el('acc').textContent = String(loc.accuracy)
+        el('ts').textContent = String(loc.timestamp)
+        // 供主进程 executeJavaScript 回读
+        window.__chGeo = {
+          latitude: loc.latitude,
+          longitude: loc.longitude,
+          accuracy: loc.accuracy,
+          timestamp: loc.timestamp
+        }
+      }
+      function setError(err) {
+        el('status').textContent = '错误: ' + err.code + ' - ' + err.message
+        window.__chGeo = { error: err.code, message: err.message }
+      }
+
+      async function read() {
+        if (!navigator.geolocation) {
+          setError({ code: 0, message: '浏览器不支持 geolocation' })
+          return
+        }
+        navigator.geolocation.getCurrentPosition(
+          (pos) => setReadout(pos.coords),
+          (err) => setError(err),
+          { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        )
+      }
+
+      // 权限状态探测
+      if (navigator.permissions && navigator.permissions.query) {
+        navigator.permissions.query({ name: 'geolocation' }).then((s) => {
+          el('perm').textContent = s.state
+          s.onchange = () => { el('perm').textContent = s.state }
+        }).catch(() => { el('perm').textContent = '不可查询' })
+      } else {
+        el('perm').textContent = 'Permissions API 不可用'
+      }
+
+      el('read').addEventListener('click', read)
+      window.__chGeoReady = true
+      // 页面加载后主动读一次，便于观察覆盖是否生效
+      read()
+    </script>
+  </body>
+</html>

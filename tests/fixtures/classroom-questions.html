@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>CourseHub 课堂题目 Fixture</title>
+    <style>
+      body { font-family: system-ui, sans-serif; background: #0b0f19; color: #e6edf7; margin: 0; padding: 24px; }
+      .q { border: 1px solid #223049; border-radius: 8px; padding: 16px; margin-bottom: 16px; background: #111827; }
+      .q h2 { font-size: 15px; margin: 0 0 12px; }
+      label { display: block; padding: 6px 0; cursor: pointer; }
+      textarea { width: 100%; min-height: 70px; background: #0b0f19; color: #e6edf7;
+                border: 1px solid #334155; border-radius: 6px; padding: 8px; font-family: inherit; }
+      #result { margin-top: 16px; font-size: 13px; font-family: ui-monospace, monospace; color: #6ee7b7; }
+      .badge { display:inline-block; font-size:11px; padding:2px 6px; border-radius:4px;
+               background:#7c2d12; color:#fed7aa; margin-left:8px; }
+    </style>
+  </head>
+  <body>
+    <h1 style="font-size:18px">课堂题目 Fixture <span class="badge">测试数据</span></h1>
+    <p style="font-size:13px;color:#93a4bd">
+      使用 data-ch-* 显式契约，供受控测试交互验证。本页不是任何真实平台，不产生任何计分记录。
+    </p>
+
+    <div class="q" data-ch-question="q-single" data-ch-control="radio">
+      <h2 data-ch-text>在深度神经网络训练中，为缓解梯度消失最常用的激活函数是？</h2>
+      <label data-ch-option="A"><input type="radio" name="q1" /> Sigmoid</label>
+      <label data-ch-option="B"><input type="radio" name="q1" /> ReLU</label>
+      <label data-ch-option="C"><input type="radio" name="q1" /> Tanh</label>
+      <label data-ch-option="D"><input type="radio" name="q1" /> Step</label>
+    </div>
+
+    <div class="q" data-ch-question="q-multi" data-ch-control="checkbox">
+      <h2 data-ch-text>以下哪些属于监督学习？（多选）</h2>
+      <label data-ch-option="A"><input type="checkbox" name="q2" /> 分类</label>
+      <label data-ch-option="B"><input type="checkbox" name="q2" /> 回归</label>
+      <label data-ch-option="C"><input type="checkbox" name="q2" /> K-means 聚类</label>
+      <label data-ch-option="D"><input type="checkbox" name="q2" /> 层次聚类</label>
+    </div>
+
+    <div class="q" data-ch-question="q-judge" data-ch-control="boolean">
+      <h2 data-ch-text>判断：TCP 是面向连接的传输层协议。</h2>
+      <label data-ch-option="T"><input type="radio" name="q3" /> 正确</label>
+      <label data-ch-option="F"><input type="radio" name="q3" /> 错误</label>
+    </div>
+
+    <div class="q" data-ch-question="q-text" data-ch-control="text">
+      <h2 data-ch-text>简述进程与线程的区别。</h2>
+      <textarea data-ch-textarea placeholder="作答区"></textarea>
+    </div>
+
+    <div id="result">尚未执行任何测试动作</div>
+
+    <script>
+      function report() {
+        const out = []
+        for (const node of document.querySelectorAll('[data-ch-question]')) {
+          const id = node.getAttribute('data-ch-question')
+          const checked = Array.from(node.querySelectorAll('input:checked')).map((i) => {
+            const wrap = i.closest('[data-ch-option]')
+            return wrap ? wrap.getAttribute('data-ch-option') : '?'
+          })
+          const ta = node.querySelector('[data-ch-textarea]')
+          out.push({ id, checked, text: ta ? ta.value : null })
+        }
+        window.__chState = out
+        document.getElementById('result').textContent = JSON.stringify(out, null, 2)
+      }
+      // 供测试注入的 change/input 监听更新读数
+      document.addEventListener('change', report)
+      document.addEventListener('input', report)
+      window.__chQuestionsReady = true
+      report()
+    </script>
+  </body>
+</html>

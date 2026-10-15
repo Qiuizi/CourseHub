@@ -1,0 +1,159 @@
+@import 'tailwindcss';
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: #0b0f19;
+  color: #e6edf7;
+  font-family: 'Segoe UI', system-ui, -apple-system, 'Microsoft YaHei', sans-serif;
+  overflow: hidden;
+}
+
+/* 原生 WebContentsView 覆盖在中央区域，本地 UI 需在其下方留出空间 */
+.app-shell {
+  display: grid;
+  grid-template-columns: 232px 1fr 320px;
+  height: 100vh;
+}
+
+.rail {
+  background: #0f1626;
+  border-right: 1px solid #1c2942;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.drawer {
+  background: #0f1626;
+  border-left: 1px solid #1c2942;
+  overflow-y: auto;
+}
+
+.center {
+  position: relative;
+  background: #0b0f19;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* 透明占位：原生视图渲染在此矩形上，本地 UI 不绘制内容 */
+.viewport {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+}
+
+.card {
+  background: #111a2e;
+  border: 1px solid #1e2b45;
+  border-radius: 10px;
+  padding: 14px;
+}
+
+.btn {
+  padding: 7px 12px;
+  border-radius: 7px;
+  border: 1px solid #2a3a5c;
+  background: #16213a;
+  color: #e6edf7;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.btn:hover:not(:disabled) {
+  background: #1d2b49;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: #2563eb;
+  border-color: #2563eb;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.btn-danger {
+  background: #7f1d1d;
+  border-color: #991b1b;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #24324f;
+  color: #93a4bd;
+  white-space: nowrap;
+}
+
+.chip-supported {
+  color: #6ee7b7;
+  border-color: #14532d;
+  background: #052e16;
+}
+.chip-partial {
+  color: #fcd34d;
+  border-color: #78350f;
+  background: #2a1a05;
+}
+.chip-unsupported {
+  color: #94a3b8;
+  border-color: #334155;
+  background: #111827;
+}
+.chip-unverified {
+  color: #c4b5fd;
+  border-color: #4c1d95;
+  background: #1e1038;
+}
+
+.scroll {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #24324f transparent;
+}
+
+input[type='text'],
+input[type='number'],
+input[type='password'],
+textarea,
+select {
+  background: #0b1220;
+  border: 1px solid #24324f;
+  border-radius: 6px;
+  color: #e6edf7;
+  padding: 6px 8px;
+  font-size: 13px;
+  width: 100%;
+  font-family: inherit;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  outline: 1px solid #3b82f6;
+  border-color: #3b82f6;
+}
+
+label {
+  font-size: 12px;
+  color: #93a4bd;
+}

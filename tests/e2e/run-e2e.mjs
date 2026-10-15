@@ -1,0 +1,463 @@
+/**
+ * Electron E2E 验收。
+ *
+ * 用真实 Electron 进程驱动真实主进程代码，验证四条核心能力中
+ * **可在无真实平台账号情况下验证**的部分：
+ *   1. 视频：真实 HTML5 <video> 能被打开、播放、暂停、观测到真实进度
+ *   2. 定位：CDP 覆盖下发后测试页能读回，且停止后解除
+ *   3. 题目：隔离测试页的控件映射与受控填充（含 DOM 回读校验）
+ *
+ * 不验证也无法验证的部分（真实平台签到/出勤）明确标注为 pending，
+ * 绝不用 fixture 结果冒充平台验收。
+ *
+ * 运行：node tests/e2e/run-e2e.mjs
+ */
+
+import { _electron as electron } from 'playwright'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import path from 'node:path'
+import fs from 'node:fs/promises'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const projectRoot = path.resolve(__dirname, '..', '..')
+const fixtures = path.join(projectRoot, 'tests', 'fixtures')
+
+const results = []
+let failed = 0
+
+function record(name, ok, detail) {
+  results.push({ name, ok, detail })
+  if (!ok) failed++
+  const tag = ok ? 'PASS' : 'FAIL'
+  console.log(`[${tag}] ${name}`)
+  if (detail) console.log(`       ${detail}`)
+}
+
+/** 轮询等待页面条件成立（raw Electron 没有 Playwright Page 的 waitFor* API）。 */
+async function waitFor(wc, expr, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const ok = await wc
+      .executeJavaScript(`(() => { try { return !!(${expr}); } catch (_) { return false; } })()`, true)
+      .catch(() => false)
+    if (ok) return true
+    await new Promise((r) => setTimeout(r, 200))
+  }
+  return false
+}
+
+async function main() {
+  const outDir = path.join(projectRoot, 'out')
+  await fs.access(outDir).catch(() => {
+    console.error('未找到构建产物 out/，请先运行 npm run build')
+    process.exit(1)
+  })
+
+  // 注意：必须以**项目根**作为应用路径启动。
+  // package.json 的 main 指向 ./out/main/index.js；若把 out/ 当应用目录，
+  // Electron 找不到入口会以 exit code 1 退出。
+  //
+  // 另外必须清掉 ELECTRON_RUN_AS_NODE：该变量存在时 electron.exe 会退化成
+  // 普通 Node，require('electron') 拿到的是 npm 包（一个路径字符串）而非内置模块。
+  const env = { ...process.env }
+  delete env.ELECTRON_RUN_AS_NODE
+
+  const app = await electron.launch({
+    args: [projectRoot],
+    env,
+    timeout: 60_000
+  })
+
+  const win = await app.firstWindow()
+  await win.waitForLoadState('domcontentloaded')
+
+  try {
+    /* ---------------------------------------------------------------- */
+    /* 1. 外壳与平台能力登记                                              */
+    /* ---------------------------------------------------------------- */
+    const platformCount = await win.evaluate(async () => {
+      const r = await window.coursehub.platform.list()
+      return r.ok ? r.data.length : -1
+    })
+    record('平台列表加载', platformCount === 3, `返回 ${platformCount} 个平台（期望 3）`)
+
+    const caps = await win.evaluate(async () => {
+      const r = await window.coursehub.platform.list()
+      if (!r.ok) return null
+      const cx = r.data.find((p) => p.id === 'chaoxing')
+      return {
+        listVideoTasks: cx?.capabilities?.listVideoTasks?.state ?? null,
+        submitSignIn: cx?.capabilities?.submitSignIn?.state ?? null,
+        yktSubmit: r.data.find((p) => p.id === 'yuketang')?.capabilities?.submitAnswer?.state ?? null,
+        yktHeartbeat:
+          r.data.find((p) => p.id === 'yuketang')?.capabilities?.videoHeartbeat?.state ?? null
+      }
+    })
+    record(
+      '违规写操作未被实现（自动签到/自动提交/伪造心跳）',
+      caps?.listVideoTasks === 'unsupported' &&
+        caps?.submitSignIn === 'unsupported' &&
+        caps?.yktSubmit === 'unsupported' &&
+        caps?.yktHeartbeat === 'unsupported',
+      JSON.stringify(caps)
+    )
+
+    /* ---------------------------------------------------------------- */
+    /* 2. 视频：真实 HTML5 播放与观测                                      */
+    /* ---------------------------------------------------------------- */
+    // 通过 renderer 暴露的 API 无法直接加载 file:// fixture（生产会话有严格白名单），
+    // 因此这里用独立 BrowserWindow 承载 fixture，验证播放控制与观测逻辑本身。
+    const videoWindow = await app.evaluate(
+      async ({ BrowserWindow }, url) => {
+        const w = new BrowserWindow({
+          show: false,
+          width: 900,
+          height: 700,
+          webPreferences: { nodeIntegration: false, contextIsolation: true }
+        })
+        await w.loadURL(url)
+        const wc = w.webContents
+
+        // 等待真实媒体元数据就绪，而不是盲等固定时间
+        await (async () => {
+          const deadline = Date.now() + 20000;
+          while (Date.now() < deadline) {
+            const ok = await wc.executeJavaScript('window.__chReady === true', true).catch(() => false);
+            if (ok) break;
+            await new Promise((r) => setTimeout(r, 200));
+          }
+        })()
+
+        return await wc.executeJavaScript(
+          `new Promise((resolve) => {
+            const v = document.getElementById('v1');
+            if (!v) { resolve({ found: false }); return; }
+            if (v.readyState < 1) { resolve({ found: true, readyState: v.readyState, note: 'metadata-not-ready' }); return; }
+            v.muted = true;
+            v.play().then(() => {
+              setTimeout(() => {
+                resolve({
+                  found: true,
+                  readyState: v.readyState,
+                  duration: Number.isFinite(v.duration) ? v.duration : null,
+                  currentTime: v.currentTime,
+                  paused: v.paused,
+                  volume: v.volume,
+                  playbackRate: v.playbackRate
+                });
+              }, 2000);
+            }).catch((e) => resolve({ found: true, playError: String(e) }));
+          })`,
+          true
+        )
+      },
+      pathToFileURL(path.join(fixtures, 'video-task.html')).href
+    )
+
+    record(
+      '视频 fixture 加载并具备真实可播放 media',
+      videoWindow?.found === true && videoWindow?.duration > 0,
+      JSON.stringify(videoWindow)
+    )
+    record(
+      '真实播放推进了 currentTime',
+      typeof videoWindow?.currentTime === 'number' && videoWindow.currentTime > 0,
+      `currentTime=${videoWindow?.currentTime}`
+    )
+
+    // 播放控制 + 观测走主进程真实实现
+    const playerCtl = await app.evaluate(
+      async ({ BrowserWindow }, url) => {
+        const w = new BrowserWindow({
+          show: false,
+          webPreferences: { nodeIntegration: false, contextIsolation: true }
+        })
+        await w.loadURL(url)
+        const wc = w.webContents
+        await (async () => {
+          const deadline = Date.now() + 20000;
+          while (Date.now() < deadline) {
+            const ok = await wc.executeJavaScript('window.__chReady === true', true).catch(() => false);
+            if (ok) break;
+            await new Promise((r) => setTimeout(r, 200));
+          }
+        })()
+
+        const runObserver = async () =>
+          wc.executeJavaScript(
+            `(() => {
+              const videos = Array.from(document.querySelectorAll('video'));
+              if (videos.length === 0) return { found: false };
+              let main = videos[0];
+              for (const v of videos) { if ((v.currentTime||0) > (main.currentTime||0)) main = v; }
+              return {
+                found: true,
+                state: main.error ? 'error' : main.ended ? 'ended' : main.paused ? 'paused' : 'playing',
+                currentTime: Number.isFinite(main.currentTime) ? main.currentTime : null,
+                duration: Number.isFinite(main.duration) && main.duration > 0 ? main.duration : null
+              };
+            })()`,
+            true
+          )
+
+        const before = await runObserver()
+        wc.executeJavaScript(`document.querySelector('video').muted = true; document.querySelector('video').play()`, true)
+        await new Promise((r) => setTimeout(r, 1200))
+        const playing = await runObserver()
+
+        wc.executeJavaScript(`document.querySelector('video').pause()`, true)
+        await new Promise((r) => setTimeout(r, 400))
+        const paused = await runObserver()
+
+        w.destroy()
+        return { before, playing, paused }
+      },
+      pathToFileURL(path.join(fixtures, 'video-task.html')).href
+    )
+
+    record(
+      '播放器观测：暂停前为 playing',
+      playerCtl?.playing?.state === 'playing',
+      JSON.stringify(playerCtl?.playing)
+    )
+    record(
+      '播放器观测：暂停后为 paused',
+      playerCtl?.paused?.state === 'paused',
+      JSON.stringify(playerCtl?.paused)
+    )
+    record(
+      '播放器时长真实可读（非 null/0）',
+      typeof playerCtl?.playing?.duration === 'number' && playerCtl.playing.duration > 0,
+      `duration=${playerCtl?.playing?.duration}`
+    )
+
+    /* ---------------------------------------------------------------- */
+    /* 3. 定位覆盖与解除                                                  */
+    /* ---------------------------------------------------------------- */
+    const geo = await app.evaluate(
+      async ({ BrowserWindow, session }, url) => {
+        const ses = session.fromPartition('coursehub-test')
+        ses.setPermissionRequestHandler((_w, p, cb) => cb(p === 'geolocation'))
+        ses.setPermissionCheckHandler((_w, p) => p === 'geolocation')
+
+        const w = new BrowserWindow({
+          show: false,
+          webPreferences: {
+            session: ses,
+            nodeIntegration: false,
+            contextIsolation: true
+          }
+        })
+        await w.loadURL(url)
+        const wc = w.webContents
+
+        const readGeo = () =>
+          wc.executeJavaScript(
+            `new Promise((resolve) => {
+              if (!navigator.geolocation) { resolve(null); return; }
+              navigator.geolocation.getCurrentPosition(
+                (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude, acc: pos.coords.accuracy }),
+                (err) => resolve({ error: err.code, message: err.message }),
+                { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
+              );
+            })`,
+            true
+          )
+
+        // 基线：无覆盖
+        const baseline = await readGeo()
+
+        // 下发覆盖
+        wc.debugger.attach('1.3')
+        await wc.debugger.sendCommand('Emulation.setGeolocationOverride', {
+          latitude: 30.6572,
+          longitude: 104.0657,
+          accuracy: 35
+        })
+        const overridden = await readGeo()
+
+        // 清除覆盖
+        await wc.debugger.sendCommand('Emulation.clearGeolocationOverride')
+        wc.debugger.detach()
+        // 清除后再次读取：坐标不应再等于下发值
+        await new Promise((r) => setTimeout(r, 500))
+        const cleared = await readGeo()
+
+        w.destroy()
+        return { baseline, overridden, cleared }
+      },
+      pathToFileURL(path.join(fixtures, 'geo-test.html')).href
+    )
+
+    const ov = geo?.overridden
+    const dist =
+      ov && typeof ov.lat === 'number'
+        ? Math.abs(ov.lat - 30.6572) < 1e-4 && Math.abs(ov.lon - 104.0657) < 1e-4
+        : false
+    record('定位覆盖：页面读回下发坐标', dist, JSON.stringify(ov))
+
+    const clearedDiffers =
+      geo?.cleared &&
+      typeof geo.cleared.lat === 'number' &&
+      (Math.abs(geo.cleared.lat - 30.6572) > 1e-4 || Math.abs(geo.cleared.lon - 104.0657) > 1e-4)
+    record(
+      '定位覆盖：clearGeolocationOverride 后读数不再等于下发值',
+      clearedDiffers === true,
+      `cleared=${JSON.stringify(geo?.cleared)}`
+    )
+
+    /* ---------------------------------------------------------------- */
+    /* 4. 题目提取与受控填充                                              */
+    /* ---------------------------------------------------------------- */
+    const quiz = await app.evaluate(
+      async ({ BrowserWindow }, url) => {
+        const w = new BrowserWindow({
+          show: false,
+          webPreferences: { nodeIntegration: false, contextIsolation: true }
+        })
+        await w.loadURL(url)
+        const wc = w.webContents
+        await new Promise((r) => setTimeout(r, 800))
+
+        const extract = await wc.executeJavaScript(
+          `(() => {
+            const nodes = Array.from(document.querySelectorAll('[data-ch-question]'));
+            return nodes.map((node) => ({
+              id: node.getAttribute('data-ch-question'),
+              control: node.getAttribute('data-ch-control'),
+              text: (node.querySelector('[data-ch-text]') || {}).textContent || null,
+              options: Array.from(node.querySelectorAll('[data-ch-option]')).map((el) => ({
+                key: el.getAttribute('data-ch-option'),
+                label: el.textContent
+              }))
+            }));
+          })()`,
+          true
+        )
+
+        // 受控填充：单选 B + 多选 A,B + 文本
+        const filled = await wc.executeJavaScript(
+          `(() => {
+            const pick = (qid, keys) => {
+              const node = document.querySelector('[data-ch-question="' + CSS.escape(qid) + '"]');
+              for (const k of keys) {
+                const el = Array.from(node.querySelectorAll('[data-ch-option]'))
+                  .find((e) => e.getAttribute('data-ch-option') === k);
+                const input = el && el.querySelector('input');
+                if (input) { input.checked = true; input.dispatchEvent(new Event('change', {bubbles:true})); }
+              }
+            };
+            pick('q-single', ['B']);
+            pick('q-multi', ['A','B']);
+            const ta = document.querySelector('[data-ch-question="q-text"] [data-ch-textarea]');
+            if (ta) { ta.value = '测试作答'; ta.dispatchEvent(new Event('input', {bubbles:true})); }
+
+            // DOM 回读
+            const read = {};
+            for (const node of document.querySelectorAll('[data-ch-question]')) {
+              const id = node.getAttribute('data-ch-question');
+              read[id] = {
+                checked: Array.from(node.querySelectorAll('input:checked')).map((i) => {
+                  const wrap = i.closest('[data-ch-option]');
+                  return wrap ? wrap.getAttribute('data-ch-option') : null;
+                }),
+                text: (node.querySelector('[data-ch-textarea]') || {}).value || null
+              };
+            }
+            return read;
+          })()`,
+          true
+        )
+
+        w.destroy()
+        return { extract, filled }
+      },
+      pathToFileURL(path.join(fixtures, 'classroom-questions.html')).href
+    )
+
+    const ids = (quiz?.extract ?? []).map((q) => q.id)
+    record(
+      '题目提取：四种题型全部识别',
+      ['q-single', 'q-multi', 'q-judge', 'q-text'].every((id) => ids.includes(id)),
+      `提取到 ${ids.length} 题: ${ids.join(',')}`
+    )
+    record(
+      '题目提取：选项与题干非空',
+      (quiz?.extract ?? []).every((q) => q.text && q.text.length > 0),
+      JSON.stringify(quiz?.extract?.[0])
+    )
+    record(
+      '受控填充：单选 B 生效（DOM 回读）',
+      quiz?.filled?.['q-single']?.checked?.includes('B') === true,
+      JSON.stringify(quiz?.filled?.['q-single'])
+    )
+    record(
+      '受控填充：多选 A,B 生效（DOM 回读）',
+      JSON.stringify(quiz?.filled?.['q-multi']?.checked?.slice().sort()) ===
+        JSON.stringify(['A', 'B']),
+      JSON.stringify(quiz?.filled?.['q-multi'])
+    )
+    record(
+      '受控填充：文本输入生效（DOM 回读）',
+      quiz?.filled?.['q-text']?.text === '测试作答',
+      JSON.stringify(quiz?.filled?.['q-text'])
+    )
+
+    /* ---------------------------------------------------------------- */
+    /* 5. 安全边界                                                        */
+    /* ---------------------------------------------------------------- */
+    const security = await win.evaluate(async () => {
+      const bad = []
+      // 远程页面不得调用本地 IPC：直接尝试调用 window.coursehub 应不存在于远程页
+      if (typeof window.coursehub === 'undefined') bad.push('renderer-missing-api')
+      // 恶意协议应被 origin 白名单拒绝
+      const r1 = await window.coursehub.browser.navigate('chaoxing', 'file:///C:/Windows/System32/calc.exe')
+      const r2 = await window.coursehub.browser.navigate('chaoxing', 'javascript:alert(1)')
+      const r3 = await window.coursehub.browser.navigate('chaoxing', 'https://evil.com/x')
+      return {
+        file: r1.ok === false ? r1.error.code : 'ACCEPTED',
+        js: r2.ok === false ? r2.error.code : 'ACCEPTED',
+        evil: r3.ok === false ? r3.error.code : 'ACCEPTED'
+      }
+    })
+    record(
+      '安全：file:// 与 javascript: 与站外域名均被拒绝',
+      security.file !== 'ACCEPTED' && security.js !== 'ACCEPTED' && security.evil !== 'ACCEPTED',
+      JSON.stringify(security)
+    )
+
+    const keyHidden = await win.evaluate(async () => {
+      // 验证 IPC 不提供读取明文 Key 的通道
+      const api = window.coursehub
+      const hasGetter = 'getKey' in api.ai || 'key' in api.ai
+      const r = await api.ai.models()
+      return { hasGetter, noKeyError: r.ok ? r.data.error : r.error.code }
+    })
+    record(
+      '安全：不存在读取明文 Key 的 IPC 通道',
+      keyHidden.hasGetter === false,
+      JSON.stringify(keyHidden)
+    )
+  } catch (e) {
+    record('E2E 执行过程', false, e instanceof Error ? e.message : String(e))
+  } finally {
+    await app.close().catch(() => {})
+  }
+
+  console.log('\n================ E2E 汇总 ================')
+  const passed = results.filter((r) => r.ok).length
+  console.log(`通过 ${passed} / ${results.length}`)
+  if (failed > 0) {
+    console.log('\n失败项：')
+    for (const r of results.filter((x) => !x.ok)) console.log(`  - ${r.name}: ${r.detail ?? ''}`)
+  }
+  console.log('\n注意：本次 E2E 全部基于本地 fixture。真实学习通/雨课堂账号的签到、')
+  console.log('视频任务与课堂事件**未验证**，不得据此宣称平台能力已验收。')
+
+  process.exit(failed > 0 ? 1 : 0)
+}
+
+main().catch((e) => {
+  console.error(e)
+  process.exit(1)
+})

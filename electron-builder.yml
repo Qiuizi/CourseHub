@@ -1,0 +1,49 @@
+appId: com.coursehub.desktop
+productName: CourseHub
+copyright: CourseHub
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - out/**/*
+  - package.json
+  - '!**/*.map'
+  - '!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}/**'
+
+# 测试 fixture 随包分发，供离线 E2E 与演示使用
+extraResources:
+  - from: tests/fixtures
+    to: fixtures
+    filter: ['**/*']
+
+asar: true
+
+# 首版不做自动更新，也不远程发布。显式声明空 publish 目标，
+# 避免 electron-builder 因缺少 git 仓库而在 updateInfo 阶段报错。
+publish: null
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: CourseHub-Setup-${version}-x64.${ext}
+  # 未购买代码签名证书，因此不签名；NSIS 会显示 SmartScreen 提示。
+  signAndEditExecutable: true
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: CourseHub
+  # 卸载默认保留用户数据，避免误删设置/缓存
+  deleteAppDataOnUninstall: false
+  installerLanguages:
+    - zh_CN
+  language: '2052'
+
+compression: normal
