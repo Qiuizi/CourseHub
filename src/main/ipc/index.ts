@@ -15,6 +15,7 @@ import type {
   ClassroomQuestion,
   GeoTestConfig,
   PlatformId,
+  PlayPolicy,
   TestActionPlan
 } from '@shared/types'
 import { ok, toErrorResult, CodedError } from '@shared/ipc'
@@ -32,6 +33,8 @@ import {
 import { TestbedServer } from '../testbed/testbed-server'
 import { GeoTestManager } from '../geo-test/geo-test-manager'
 import { PlayerObserver, commandPlayer } from '../video/player-observer'
+import { ContinuousManager } from '../video/continuous-manager'
+import { inspectChapterInWebContents } from '../video/task-inspector'
 import { DeepSeekClient } from '../ai/deepseek-client'
 import {
   extractQuestions,
@@ -95,6 +98,12 @@ export interface IpcDeps {
 export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () => void } {
   const ai = new DeepSeekClient(deps.store)
   const observers = new Map<string, PlayerObserver>()
+  const continuousManager = new ContinuousManager({
+    store: deps.store,
+    getWindow: deps.getWindow,
+    getWebContents: (platformId) => deps.browsers.get(platformId)?.webContents ?? null
+  })
+  const notifiedActivityIds = new Set<string>()
 
   const handle = <T>(
     channel: string,
@@ -311,6 +320,43 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     }
   })
 
+  handle('classroom:activities', async (_e, payload) => {
+    const p = payload as { platformId?: unknown } | undefined
+    const id = (typeof p?.platformId === 'string' ? p.platformId : 'testbed') as PlatformId
+    const adapter = getAdapter(id)
+    if (!adapter) throw new CodedError('NOT_FOUND', `未知平台 ${id}`)
+
+    const b = deps.browsers.get(id)
+    const ses = b
+      ? b.getSession()
+      : id === 'testbed'
+        ? testSession()
+        : session.fromPartition(sessionNameFor(id))
+
+    if (!adapter.listActivities) {
+      return {
+        state: 'unsupported',
+        activities: [],
+        fetchedAt: new Date().toISOString(),
+        reason: `${id} 平台未提供活动列表端点`
+      }
+    }
+
+    const res = await adapter.listActivities(ses)
+    if (res.state === 'supported' && Array.isArray(res.activities)) {
+      const win = deps.getWindow()
+      for (const act of res.activities) {
+        if (act.status === 'open' && !notifiedActivityIds.has(act.id)) {
+          notifiedActivityIds.add(act.id)
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('classroom:activity-notify', act)
+          }
+        }
+      }
+    }
+    return res
+  })
+
   handle('platform:courses', async (_e, payload) => {
     const p = payload as { platformId?: unknown }
     const id = platformId(p?.platformId)
@@ -357,7 +403,10 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
             taskType: 'unknown',
             taskUrl: null,
             status: 'unknown',
-            source: 'testbed'
+            source: 'testbed',
+            detectionMethod: 'uninspected',
+            confidence: 'low',
+            attachments: []
           },
           {
             courseId,
@@ -369,7 +418,21 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
             taskType: 'video',
             taskUrl: pathToFileURL(path.join(fixturesDir(), 'video-task.html')).href,
             status: 'not_started',
-            source: 'testbed'
+            source: 'testbed',
+            detectionMethod: 'dom_element',
+            confidence: 'high',
+            attachments: [
+              {
+                chapterId: 'test-chap-01',
+                taskId: 't1',
+                taskType: 'video',
+                title: '任务 1 · 开场导学',
+                sourceUrl: 'coursehub-test-video.mp4',
+                source: 'dom_element',
+                detectionMethod: 'dom_element',
+                confidence: 'high'
+              }
+            ]
           }
         ]
       }
@@ -482,10 +545,6 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
 
   /* -------------------------------- 视频 -------------------------------- */
 
-  let continuousActive = false
-  let continuousQueue: string[] = ['t1', 't2']
-  let currentObservedTaskId = 't1'
-
   handle('video:list', async (_e, payload) => {
     const p = payload as { platformId?: unknown }
     const id = platformId(p?.platformId)
@@ -533,6 +592,26 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
       reason: adapter.capabilities.listVideoTasks?.reason ?? null,
       tasks: []
     }
+  })
+
+  handle('video:inspect-chapter', async (_e, payload) => {
+    const p = payload as { platformId?: unknown; chapterId?: unknown }
+    const id = platformId(p?.platformId ?? 'testbed')
+    const chapterId = str(p?.chapterId, 'chapterId', 128)
+    const wc = deps.browsers.get(id)?.webContents
+    if (!wc || wc.isDestroyed()) throw new CodedError('PLAYER_UNAVAILABLE', '平台视图未打开')
+
+    const res = await inspectChapterInWebContents(wc, chapterId)
+    const win = deps.getWindow()
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('video:chapter-inspected', res)
+    }
+    await deps.store.log('info', 'chapter_inspected', {
+      chapterId,
+      taskType: res.taskType,
+      attachmentCount: res.attachments.length
+    })
+    return res
   })
 
   handle('video:command', async (_e, payload) => {
@@ -597,7 +676,6 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     const wc = deps.browsers.get(id)?.webContents
     if (!wc) throw new CodedError('PLAYER_UNAVAILABLE', '平台视图未打开')
 
-    currentObservedTaskId = taskId
     for (const [existingId, obs] of observers.entries()) {
       obs.stop()
       observers.delete(existingId)
@@ -607,32 +685,6 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
       const win = deps.getWindow()
       if (win && !win.isDestroyed()) {
         win.webContents.send('video:observation', obs)
-      }
-
-      // 连续播放状态机：当当前任务触发 ended 且满足连续播放条件时，自动切换到下一任务
-      if (continuousActive && obs.playerState === 'ended' && obs.taskId === currentObservedTaskId) {
-        const currentIndex = continuousQueue.indexOf(obs.taskId)
-        if (currentIndex >= 0 && currentIndex < continuousQueue.length - 1) {
-          const nextTaskId = continuousQueue[currentIndex + 1]!
-          currentObservedTaskId = nextTaskId
-          void (async () => {
-            await commandPlayer(wc, 'play', undefined, nextTaskId)
-            observers.get(obs.taskId)?.stop()
-            observers.delete(obs.taskId)
-            const nextObserver = new PlayerObserver(nextTaskId, wc, onObs)
-            observers.set(nextTaskId, nextObserver)
-            nextObserver.start()
-            win?.webContents.send('video:task-switched', {
-              previousTaskId: obs.taskId,
-              currentTaskId: nextTaskId
-            })
-            await deps.store.log('info', 'video_continuous_switched', { from: obs.taskId, to: nextTaskId })
-          })()
-        } else if (currentIndex >= continuousQueue.length - 1) {
-          continuousActive = false
-          win?.webContents.send('video:continuous-completed', { completedAt: new Date().toISOString() })
-          void deps.store.log('info', 'video_continuous_completed', { at: new Date().toISOString() })
-        }
       }
     }
 
@@ -651,22 +703,58 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
   })
 
   handle('video:start-continuous', async (_e, payload) => {
-    const p = payload as { platformId?: unknown; taskQueue?: unknown }
+    const p = payload as {
+      platformId?: unknown
+      courseId?: unknown
+      taskQueue?: unknown
+      initialTaskId?: unknown
+      policy?: unknown
+    }
+    const id = platformId(p?.platformId ?? 'testbed')
     const queue = Array.isArray(p?.taskQueue) && p.taskQueue.length > 0
-      ? (p.taskQueue as string[])
+      ? (p.taskQueue as any[])
       : ['t1', 't2']
-    continuousActive = true
-    continuousQueue = queue
-    await deps.store.log('info', 'video_continuous_started', { queue })
-    return { started: true, queue }
+    const initialTaskId = typeof p?.initialTaskId === 'string' ? p.initialTaskId : undefined
+    const courseId = typeof p?.courseId === 'string' ? p.courseId : undefined
+    const policy = (p?.policy === 'stop_on_non_video' || p?.policy === 'video_only')
+      ? (p.policy as PlayPolicy)
+      : 'video_only'
+
+    for (const obs of observers.values()) obs.stop()
+    observers.clear()
+
+    const res = await continuousManager.start({
+      platformId: id,
+      courseId,
+      queue,
+      initialTaskId,
+      policy
+    })
+    return res
   })
 
   handle('video:stop-continuous', async () => {
-    continuousActive = false
-    const win = deps.getWindow()
-    win?.webContents.send('video:continuous-stopped', { at: new Date().toISOString() })
+    continuousManager.stop()
     await deps.store.log('info', 'video_continuous_stopped', { at: new Date().toISOString() })
     return { stopped: true }
+  })
+
+  handle('video:reset-course', async () => {
+    continuousManager.resetCourse()
+    for (const obs of observers.values()) obs.stop()
+    observers.clear()
+    return { reset: true }
+  })
+
+  handle('video:continuous-state', async () => {
+    return continuousManager.getState()
+  })
+
+  handle('video:set-continuous-policy', async (_e, payload) => {
+    const p = payload as { policy?: unknown }
+    const policy = p?.policy === 'stop_on_non_video' ? 'stop_on_non_video' : 'video_only'
+    continuousManager.setPolicy(policy)
+    return { policy }
   })
 
   handle('testbed:simulate-lifecycle', async (_e, payload) => {
@@ -910,22 +998,23 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
       let textValue: string | null = null
       let explanation = ''
 
+      const prefix = hasKey ? '[AI 智能分析] ' : '[Mock 模拟分析] '
       if (q.id === 'q-single') {
         suggestedKeys = ['B']
-        explanation = 'ReLU 函数在正区间导数为 1，可有效缓解深层网络的梯度消失问题。'
+        explanation = prefix + 'ReLU 函数在正区间导数为 1，可有效缓解深层网络的梯度消失问题。'
       } else if (q.id === 'q-multi') {
         suggestedKeys = ['A', 'B']
-        explanation = '分类与回归目标为已知标签，属于监督学习；聚类属于无监督学习。'
+        explanation = prefix + '分类与回归目标为已知标签，属于监督学习；聚类属于无监督学习。'
       } else if (q.id === 'q-judge') {
         suggestedKeys = ['T']
-        explanation = 'TCP 是面向连接、提供可靠交付的传输层协议。'
+        explanation = prefix + 'TCP 是面向连接、提供可靠交付的传输层协议。'
       } else if (q.id === 'q-text') {
         textValue = '进程是系统资源分配的基本单位；线程是CPU调度的基本单位，共享进程资源。'
-        explanation = '标准答案要点：资源拥有与调度单位的区别。'
+        explanation = prefix + '标准答案要点：资源拥有与调度单位的区别。'
       } else {
         if (q.options.length > 0) suggestedKeys = [q.options[0]!.key]
         else textValue = '测试填充内容'
-        explanation = '规则自动匹配'
+        explanation = prefix + '规则自动匹配'
       }
 
       const plan = buildTestPlan({
@@ -1039,6 +1128,7 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     dispose: () => {
       for (const o of observers.values()) o.stop()
       observers.clear()
+      continuousManager.dispose()
     }
   }
 }

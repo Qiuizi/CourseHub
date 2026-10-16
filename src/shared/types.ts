@@ -50,8 +50,22 @@ export interface Course {
   fetchedAt: string
 }
 
-export type TaskType = 'video' | 'doc' | 'quiz' | 'other' | 'unknown'
+export type TaskType = 'video' | 'doc' | 'quiz' | 'read' | 'mixed' | 'other' | 'unknown'
 export type ChapterTaskStatus = 'completed' | 'in_progress' | 'not_started' | 'unknown'
+
+export type TaskDetectionMethod = 'dom_element' | 'iframe_probe' | 'catalog_icon' | 'catalog_title' | 'uninspected'
+
+export interface ChapterAttachment {
+  chapterId: string
+  taskId: string
+  taskType: TaskType
+  title: string
+  sourceUrl: string | null
+  source: string
+  detectionMethod: TaskDetectionMethod
+  confidence: 'high' | 'medium' | 'low'
+  isCompleted?: boolean
+}
 
 export interface ChapterNode {
   courseId: string
@@ -64,6 +78,18 @@ export interface ChapterNode {
   taskUrl: string | null
   status: ChapterTaskStatus
   source: string
+  detectionMethod?: TaskDetectionMethod
+  confidence?: 'high' | 'medium' | 'low'
+  attachments?: ChapterAttachment[]
+}
+
+export interface ChapterInspectionResult {
+  chapterId: string
+  taskType: TaskType
+  detectionMethod: TaskDetectionMethod
+  confidence: 'high' | 'medium' | 'low'
+  attachments: ChapterAttachment[]
+  inspectedAt: string
 }
 
 export interface SignInEvent {
@@ -132,6 +158,36 @@ export interface ClassroomEvent {
   normalizedStatus: string
   confidence: 'high' | 'medium' | 'low'
   capabilityState: CapabilityState
+}
+
+export type ClassroomActivityCategory =
+  | 'sign_in'
+  | 'questionnaire'
+  | 'quiz'
+  | 'rollcall'
+  | 'exercise'
+  | 'notice'
+  | 'task'
+  | 'group'
+  | 'other'
+
+export interface ClassroomActivityItem {
+  id: string
+  platformId: PlatformId
+  courseId: string
+  courseName: string
+  classId: string
+  title: string
+  category: ClassroomActivityCategory
+  status: 'open' | 'pending' | 'closed' | 'unknown'
+  startAt: string | null
+  endAt: string | null
+  sourceUrl: string | null
+  fetchedAt: string
+  locationRequired: boolean
+  locationText: string | null
+  signInKind: SignInKind
+  confidence: 'high' | 'medium' | 'low'
 }
 
 export interface Reminder {
@@ -215,7 +271,19 @@ export interface AIResult {
   model: string
   contextSource: 'text' | 'screenshot' | 'text+screenshot'
   usage: { promptTokens: number | null; completionTokens: number | null } | null
+  isMock?: boolean
 }
+
+export type PlayPolicy = 'video_only' | 'stop_on_non_video'
+
+export type ContinuousPlaybackState =
+  | 'idle'
+  | 'playing'
+  | 'transitioning'
+  | 'paused_non_video'
+  | 'stopped'
+  | 'completed'
+  | 'error'
 
 export interface AIRequestState {
   id: string

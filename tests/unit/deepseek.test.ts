@@ -71,18 +71,28 @@ describe('parseModelsResponse', () => {
 })
 
 describe('模型能力选择', () => {
-  it('deepseek-flash 支持图片', () => {
-    const flash = KNOWN_MODELS.find((m) => m.id === 'deepseek-flash')!
-    expect(modelSupportsImage(flash)).toBe(true)
+  it('deepseek-chat 与 deepseek-reasoner 为官方纯文本模型，不假定图片能力', () => {
+    const chat = KNOWN_MODELS.find((m) => m.id === 'deepseek-chat')!
+    const reasoner = KNOWN_MODELS.find((m) => m.id === 'deepseek-reasoner')!
+    expect(modelSupportsImage(chat)).toBe(false)
+    expect(modelSupportsImage(reasoner)).toBe(false)
   })
 
-  it('选出唯一支持图片的模型', () => {
-    expect(pickVisionModel(KNOWN_MODELS)?.id).toBe('deepseek-flash')
+  it('官方 DeepSeek 模型列表无图片模型时 pickVisionModel 返回 null，不静默降级', () => {
+    expect(pickVisionModel(KNOWN_MODELS)).toBeNull()
   })
 
-  it('无图片模型时返回 null，不静默降级', () => {
-    const textOnly = KNOWN_MODELS.filter((m) => !modelSupportsImage(m))
-    expect(pickVisionModel(textOnly)).toBeNull()
+  it('具有 image 模态的非 deepseek 专属模型可被正常识别', () => {
+    const customVision = {
+      id: 'custom-vision-model',
+      displayName: 'Custom Vision',
+      contextWindow: 128000,
+      maxOutputTokens: 8192,
+      inputModalities: ['text', 'image'] as const,
+      raw: null
+    }
+    expect(modelSupportsImage(customVision)).toBe(true)
+    expect(pickVisionModel([customVision])?.id).toBe('custom-vision-model')
   })
 
   it('选出文本模型', () => {
@@ -103,8 +113,8 @@ describe('legacy 别名识别', () => {
   })
 
   it('当前模型不算别名', () => {
-    expect(isRetiredAlias('deepseek-flash')).toBe(false)
-    expect(isRetiredAlias('deepseek-v4-pro')).toBe(false)
+    expect(isRetiredAlias('deepseek-chat')).toBe(false)
+    expect(isRetiredAlias('deepseek-reasoner')).toBe(false)
   })
 })
 

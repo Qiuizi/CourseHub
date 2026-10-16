@@ -10,13 +10,16 @@ import type { IpcResult } from '@shared/types'
 import type {
   AIResult,
   Bounds,
+  ClassroomActivityItem,
   ClassroomQuestion,
   GeoTestConfig,
   GeoTestRun,
   PlatformId,
   PlaybackObservation,
+  PlayPolicy,
   TestActionPlan,
-  ChapterNode
+  ChapterNode,
+  ChapterInspectionResult
 } from '@shared/types'
 
 export interface PlatformSummary {
@@ -81,6 +84,11 @@ const api = {
         'classroom:today-signins',
         { platformId }
       ),
+    activities: (platformId?: PlatformId) =>
+      invoke<{ state: string; activities: ClassroomActivityItem[]; fetchedAt: string; reason: string | null }>(
+        'classroom:activities',
+        { platformId }
+      ),
     auth: (platformId: PlatformId) =>
       invoke<{ state: string; evidence: string | null }>('platform:auth', { platformId }),
     courses: (platformId: PlatformId) =>
@@ -96,6 +104,8 @@ const api = {
   video: {
     list: (platformId: PlatformId) =>
       invoke<{ state: string; reason: string | null; tasks: unknown[] }>('video:list', { platformId }),
+    inspectChapter: (input: { platformId: PlatformId; chapterId: string }) =>
+      invoke<ChapterInspectionResult>('video:inspect-chapter', input),
     command: (platformId: PlatformId, action: string, value?: number, taskId?: string) =>
       invoke<{ applied: boolean }>('video:command', { platformId, action, value, taskId }),
     observe: (platformId: PlatformId, taskId: string) =>
@@ -103,9 +113,27 @@ const api = {
     stopObserve: (taskId: string) => invoke<{ stopped: boolean }>('video:stop-observe', { taskId }),
     setAudioMute: (platformId: PlatformId, muted: boolean) =>
       invoke<{ muted: boolean }>('video:set-audio-mute', { platformId, muted }),
-    startContinuous: (platformId: PlatformId, taskQueue?: string[]) =>
-      invoke<{ started: boolean; queue: string[] }>('video:start-continuous', { platformId, taskQueue }),
-    stopContinuous: () => invoke<{ stopped: boolean }>('video:stop-continuous')
+    startContinuous: (input: {
+      platformId: PlatformId
+      courseId?: string
+      taskQueue: Array<{ id: string; title: string; sourceUrl?: string; taskType: string } | string>
+      initialTaskId?: string
+      policy?: PlayPolicy
+    }) =>
+      invoke<{ ok: boolean; queue: string[]; message?: string }>('video:start-continuous', input),
+    stopContinuous: () => invoke<{ stopped: boolean }>('video:stop-continuous'),
+    resetCourse: () => invoke<{ reset: boolean }>('video:reset-course'),
+    continuousState: () =>
+      invoke<{
+        state: string
+        policy: PlayPolicy
+        platformId: PlatformId
+        courseId: string | null
+        currentTaskId: string | null
+        queueLength: number
+      }>('video:continuous-state'),
+    setContinuousPolicy: (policy: PlayPolicy) =>
+      invoke<{ policy: PlayPolicy }>('video:set-continuous-policy', { policy })
   },
   geoTest: {
     configure: (config: GeoTestConfig) => invoke<{ valid: boolean }>('geo-test:configure', { config }),
@@ -212,6 +240,31 @@ const api = {
       const handler = (): void => cb()
       ipcRenderer.on('video:continuous-stopped', handler)
       return () => ipcRenderer.removeListener('video:continuous-stopped', handler)
+    },
+    onChapterInspected: (cb: (res: ChapterInspectionResult) => void): (() => void) => {
+      const handler = (_e: unknown, res: ChapterInspectionResult): void => cb(res)
+      ipcRenderer.on('video:chapter-inspected', handler)
+      return () => ipcRenderer.removeListener('video:chapter-inspected', handler)
+    },
+    onTaskSkipped: (cb: (evt: { taskId: string; title: string; taskType: string; reason: string }) => void): (() => void) => {
+      const handler = (_e: unknown, evt: { taskId: string; title: string; taskType: string; reason: string }): void => cb(evt)
+      ipcRenderer.on('video:task-skipped', handler)
+      return () => ipcRenderer.removeListener('video:task-skipped', handler)
+    },
+    onContinuousPausedNonVideo: (cb: (evt: { currentTaskId: string; title: string; taskType: string; reason: string }) => void): (() => void) => {
+      const handler = (_e: unknown, evt: { currentTaskId: string; title: string; taskType: string; reason: string }): void => cb(evt)
+      ipcRenderer.on('video:continuous-paused-non-video', handler)
+      return () => ipcRenderer.removeListener('video:continuous-paused-non-video', handler)
+    },
+    onContinuousError: (cb: (evt: { code: string; message: string; taskId: string }) => void): (() => void) => {
+      const handler = (_e: unknown, evt: { code: string; message: string; taskId: string }): void => cb(evt)
+      ipcRenderer.on('video:continuous-error', handler)
+      return () => ipcRenderer.removeListener('video:continuous-error', handler)
+    },
+    onActivityNotify: (cb: (act: ClassroomActivityItem) => void): (() => void) => {
+      const handler = (_e: unknown, act: ClassroomActivityItem): void => cb(act)
+      ipcRenderer.on('classroom:activity-notify', handler)
+      return () => ipcRenderer.removeListener('classroom:activity-notify', handler)
     }
   }
 }

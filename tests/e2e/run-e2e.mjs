@@ -778,6 +778,109 @@ async function main() {
       autoQuiz?.isMock === true,
       `isMock=${autoQuiz?.isMock}`
     )
+
+    /* ---------------------------------------------------------------- */
+    /* 9. v0.3.9 闭环验证：任务探测、连播策略、活动工作台与 AI 约束         */
+    /* ---------------------------------------------------------------- */
+
+    // 9.1 任务真实组件探测：拒绝标题猜测，进入页面后由 DOM 实测探测
+    const inspectResult = await win.evaluate(async () => {
+      await window.coursehub.testbed.loadFixture('video-task.html')
+      const r = await window.coursehub.video.inspectChapter({ platformId: 'testbed', chapterId: 'fixture-chap-01' })
+      return r.ok ? r.data : null
+    })
+    record(
+      'v0.3.9-1：任务真实组件实测探测（DOM 探测出 video 附件且置信度为 high）',
+      inspectResult?.taskType === 'video' &&
+        inspectResult?.confidence === 'high' &&
+        inspectResult?.detectionMethod === 'dom_element' &&
+        Array.isArray(inspectResult?.attachments) &&
+        inspectResult.attachments.some((a) => a.taskType === 'video'),
+      JSON.stringify(inspectResult)
+    )
+
+    // 9.2 连播策略与课程复位状态机：杜绝跨课程串队列，支持非视频暂停/跳过
+    const continuousPolicyTest = await win.evaluate(async () => {
+      // 切换策略为 stop_on_non_video
+      const p1 = await window.coursehub.video.setContinuousPolicy('stop_on_non_video')
+      const s1 = await window.coursehub.video.continuousState()
+
+      // 切换策略为 video_only
+      const p2 = await window.coursehub.video.setContinuousPolicy('video_only')
+      const s2 = await window.coursehub.video.continuousState()
+
+      // 复位课程状态
+      const reset = await window.coursehub.video.resetCourse()
+      const s3 = await window.coursehub.video.continuousState()
+
+      return {
+        policy1: s1.ok ? s1.data.policy : null,
+        policy2: s2.ok ? s2.data.policy : null,
+        resetOk: reset.ok,
+        stateAfterReset: s3.ok ? s3.data.state : null,
+        courseAfterReset: s3.ok ? s3.data.courseId : null
+      }
+    })
+    record(
+      'v0.3.9-2：连播策略受控切换与课程复位（隔离跨课程队列与调度）',
+      continuousPolicyTest?.policy1 === 'stop_on_non_video' &&
+        continuousPolicyTest?.policy2 === 'video_only' &&
+        continuousPolicyTest?.resetOk === true &&
+        continuousPolicyTest?.stateAfterReset === 'idle' &&
+        continuousPolicyTest?.courseAfterReset === null,
+      JSON.stringify(continuousPolicyTest)
+    )
+
+    // 9.3 课堂活动工作台：多课程活动聚合、分类、起止时间与状态区分
+    const activitiesResult = await win.evaluate(async () => {
+      const r = await window.coursehub.classroom.activities('testbed')
+      return r.ok ? r.data : null
+    })
+    const acts = activitiesResult?.activities || []
+    const hasSignIn = acts.some((a) => a.category === 'sign_in')
+    const hasQuiz = acts.some((a) => a.category === 'quiz')
+    const hasQuestionnaire = acts.some((a) => a.category === 'questionnaire')
+    const hasNotice = acts.some((a) => a.category === 'notice')
+    const hasStatusOpen = acts.some((a) => a.status === 'open')
+    const hasStatusClosed = acts.some((a) => a.status === 'closed')
+    record(
+      'v0.3.9-3：课堂活动工作台多课程聚合（分类/时间/状态完备）',
+      acts.length >= 4 && hasSignIn && hasQuiz && hasQuestionnaire && hasNotice && hasStatusOpen && hasStatusClosed,
+      `聚合到 ${acts.length} 个多课程活动，分类：签到(${hasSignIn})/测验(${hasQuiz})/问卷(${hasQuestionnaire})/通知(${hasNotice})`
+    )
+
+    // 9.4 DeepSeek 真实调用限制检查：官方模型不支持图片输入，明确拦截且不扣费
+    const deepseekVisionCheck = await win.evaluate(async () => {
+      const res = await window.coursehub.ai.generate({
+        model: 'deepseek-chat',
+        systemPrompt: '助教模式',
+        userText: '请分析这张课程作业截图',
+        imageDataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
+      })
+      return res
+    })
+    const visionErrorMsg = deepseekVisionCheck?.ok
+      ? deepseekVisionCheck?.data?.error
+      : deepseekVisionCheck?.error?.message
+    record(
+      'v0.3.9-4：DeepSeek 多模态能力核验（官方模型明确拒绝图片并友好提示，不发伪请求）',
+      typeof visionErrorMsg === 'string' && visionErrorMsg.includes('不支持图片输入'),
+      JSON.stringify(deepseekVisionCheck)
+    )
+
+    // 9.5 DeepSeek Token 与 Mock 状态清晰透传
+    const deepseekTokenCheck = await win.evaluate(async () => {
+      await window.coursehub.testbed.loadFixture('classroom-questions.html')
+      const res = await window.coursehub.question.autoAnalyzeAndFill({ platformId: 'testbed', questionId: 'q-single' })
+      return res.ok ? res.data : null
+    })
+    record(
+      'v0.3.9-5：DeepSeek 响应明晰区分 Mock 且汇报执行结果',
+      deepseekTokenCheck?.isMock === true &&
+        deepseekTokenCheck?.totalProcessed === 1 &&
+        deepseekTokenCheck?.results?.[0]?.explanation?.includes('[Mock 模拟分析]'),
+      JSON.stringify(deepseekTokenCheck)
+    )
   } catch (e) {
     record('E2E 执行过程', false, e instanceof Error ? e.message : String(e))
   } finally {

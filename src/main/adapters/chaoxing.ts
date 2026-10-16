@@ -11,7 +11,13 @@
  * - 状态标注：若缺少真实线上账号联调，网络请求层返回 unverified，但不妨碍本地 Schema 校验。
  */
 
-import type { SignInEvent, ChapterNode, TaskType } from '@shared/types'
+import type {
+  SignInEvent,
+  ChapterNode,
+  TaskType,
+  TaskDetectionMethod,
+  ClassroomActivityItem
+} from '@shared/types'
 
 export interface ChaoxingCourse {
   courseId: string
@@ -352,56 +358,151 @@ export function buildMooc2ChapterListRequest(
   }
 }
 
+export interface TaskClassificationResult {
+  taskType: TaskType
+  detectionMethod: TaskDetectionMethod
+  confidence: 'high' | 'medium' | 'low'
+  source: string
+}
+
 /**
- * 依据 HTML 片段（图标 class）与任务标题，精准区分类别：
- * 视频 (video)、文档 (doc)、测验 (quiz)、其他 (other) 与 无法识别 (unknown)。
+ * 依据 HTML 片段（图标 class）与任务标题，基于可信证据进行类别识别：
+ * 视频 (video)、文档 (doc)、测验 (quiz)、阅读 (read)、混合 (mixed)、其他 (other) 与 待确认 (unknown)。
+ *
+ * 核心准则（开发规范 §1）：
+ * 1. 绝不允许仅因标题包含“第几章”“第几节”“课程”“教学”或“1.1/2.1”等小节号就断定为视频。
+ * 2. 字段必须有实际页面来源（图标 DOM 类名或明确文件后缀/微课标识），不得编造。
+ * 3. 无明确确定证据的章节，一律标为 unknown，界面展示“任务类型待确认”，由进入页面后的 DOM 检测实测升级。
  */
-export function classifyChaoxingTaskType(liHtml: string, title: string): TaskType {
+export function classifyChaoxingTaskNode(
+  liHtml: string,
+  title: string,
+  _chapterId = ''
+): TaskClassificationResult {
   const lowerHtml = liHtml.toLowerCase()
   const lowerTitle = title.toLowerCase()
 
-  // 1. 测验 / 作业 / 考试
+  // 1. 优先依据 HTML 结构中的图标类名（确凿的官方 DOM 标记，置信度 medium）
+  if (
+    lowerHtml.includes('icon-shipin') ||
+    lowerHtml.includes('icon_video') ||
+    lowerHtml.includes('icon_sp') ||
+    lowerHtml.includes('bnt_shipin')
+  ) {
+    return {
+      taskType: 'video',
+      detectionMethod: 'catalog_icon',
+      confidence: 'medium',
+      source: 'chaoxing_catalog_icon'
+    }
+  }
+
+  if (
+    lowerHtml.includes('icon-wendang') ||
+    lowerHtml.includes('icon-pdf') ||
+    lowerHtml.includes('icon-doc') ||
+    lowerHtml.includes('icon-ppt')
+  ) {
+    return {
+      taskType: 'doc',
+      detectionMethod: 'catalog_icon',
+      confidence: 'medium',
+      source: 'chaoxing_catalog_icon'
+    }
+  }
+
   if (
     lowerHtml.includes('icon-ceshi') ||
     lowerHtml.includes('icon-zuoye') ||
     lowerHtml.includes('icon-ti') ||
-    lowerHtml.includes('test') ||
+    lowerHtml.includes('test')
+  ) {
+    return {
+      taskType: 'quiz',
+      detectionMethod: 'catalog_icon',
+      confidence: 'medium',
+      source: 'chaoxing_catalog_icon'
+    }
+  }
+
+  if (
+    lowerHtml.includes('icon-taolun') ||
+    lowerHtml.includes('icon-zhibo') ||
+    lowerHtml.includes('icon-huodong')
+  ) {
+    return {
+      taskType: 'other',
+      detectionMethod: 'catalog_icon',
+      confidence: 'medium',
+      source: 'chaoxing_catalog_icon'
+    }
+  }
+
+  // 2. 明确的文件后缀或无法歧义的专用关键词（置信度 low，明确标记为 catalog_title 提示）
+  if (
+    lowerTitle.includes('.mp4') ||
+    lowerTitle.includes('.flv') ||
+    lowerTitle.includes('.m3u8') ||
+    lowerTitle.includes('微课') ||
+    lowerTitle.includes('录像')
+  ) {
+    return {
+      taskType: 'video',
+      detectionMethod: 'catalog_title',
+      confidence: 'low',
+      source: 'chaoxing_catalog_title'
+    }
+  }
+
+  if (
+    lowerTitle.includes('文档') ||
+    lowerTitle.includes('课件') ||
+    lowerTitle.includes('教案') ||
+    lowerTitle.includes('pdf') ||
+    lowerTitle.includes('ppt') ||
+    lowerTitle.includes('word') ||
+    lowerTitle.includes('讲义') ||
+    lowerTitle.includes('导学案')
+  ) {
+    return {
+      taskType: 'doc',
+      detectionMethod: 'catalog_title',
+      confidence: 'low',
+      source: 'chaoxing_catalog_title'
+    }
+  }
+
+  if (
+    lowerTitle.includes('阅读材料') ||
+    lowerTitle.includes('拓展阅读') ||
+    lowerTitle.includes('参考读物')
+  ) {
+    return {
+      taskType: 'read',
+      detectionMethod: 'catalog_title',
+      confidence: 'low',
+      source: 'chaoxing_catalog_title'
+    }
+  }
+
+  if (
     lowerTitle.includes('测试') ||
     lowerTitle.includes('测验') ||
     lowerTitle.includes('作业') ||
     lowerTitle.includes('小测') ||
     lowerTitle.includes('考试') ||
     lowerTitle.includes('自测') ||
-    lowerTitle.includes('练习')
+    lowerTitle.includes('考核')
   ) {
-    return 'quiz'
+    return {
+      taskType: 'quiz',
+      detectionMethod: 'catalog_title',
+      confidence: 'low',
+      source: 'chaoxing_catalog_title'
+    }
   }
 
-  // 2. 文档 / 课件 / PDF / PPT / 说明 / 须知 / 导学
   if (
-    lowerHtml.includes('icon-wendang') ||
-    lowerHtml.includes('icon-pdf') ||
-    lowerHtml.includes('icon-doc') ||
-    lowerHtml.includes('icon-ppt') ||
-    lowerTitle.includes('文档') ||
-    lowerTitle.includes('课件') ||
-    lowerTitle.includes('教案') ||
-    lowerTitle.includes('pdf') ||
-    lowerTitle.includes('ppt') ||
-    lowerTitle.includes('讲义') ||
-    lowerTitle.includes('阅读') ||
-    lowerTitle.includes('说明') ||
-    lowerTitle.includes('须知') ||
-    lowerTitle.includes('导学案')
-  ) {
-    return 'doc'
-  }
-
-  // 3. 互动 / 讨论 / 直播 / 咨询 / 联系等其他任务
-  if (
-    lowerHtml.includes('icon-taolun') ||
-    lowerHtml.includes('icon-zhibo') ||
-    lowerHtml.includes('icon-huodong') ||
     lowerTitle.includes('讨论') ||
     lowerTitle.includes('直播') ||
     lowerTitle.includes('互动') ||
@@ -409,30 +510,26 @@ export function classifyChaoxingTaskType(liHtml: string, title: string): TaskTyp
     lowerTitle.includes('咨询') ||
     lowerTitle.includes('联系我们')
   ) {
-    return 'other'
+    return {
+      taskType: 'other',
+      detectionMethod: 'catalog_title',
+      confidence: 'low',
+      source: 'chaoxing_catalog_title'
+    }
   }
 
-  // 4. 视频
-  if (
-    lowerHtml.includes('icon-shipin') ||
-    lowerHtml.includes('icon_video') ||
-    lowerHtml.includes('icon_sp') ||
-    lowerTitle.includes('视频') ||
-    lowerTitle.includes('录像') ||
-    lowerTitle.includes('微课') ||
-    lowerTitle.includes('讲座') ||
-    lowerTitle.includes('.mp4') ||
-    lowerTitle.includes('.flv')
-  ) {
-    return 'video'
+  // 严禁根据“1.1/2.1”小节号或“教学/课程”等常规模棱两可词汇断言为视频！
+  // 未进入页面验证前，如实标为 unknown（待确认），避免将猜测当事实
+  return {
+    taskType: 'unknown',
+    detectionMethod: 'uninspected',
+    confidence: 'low',
+    source: 'unverified_catalog'
   }
+}
 
-  // 5. 常见教学小节（包含明确的小节节号 1.1 / 2.1 等常规教学视频）
-  if (/^[0-9]+(\.[0-9]+)+/i.test(title.trim())) {
-    return 'video'
-  }
-
-  return 'unknown'
+export function classifyChaoxingTaskType(liHtml: string, title: string): TaskType {
+  return classifyChaoxingTaskNode(liHtml, title).taskType
 }
 
 /**
@@ -512,7 +609,10 @@ export function parseMooc2ChapterListResponse(
       taskType: 'unknown',
       taskUrl: null,
       status: 'unknown',
-      source: 'mooc2-unit'
+      source: 'mooc2',
+      detectionMethod: 'uninspected',
+      confidence: 'low',
+      attachments: []
     })
 
     const levelHtmlMatch = unitHtml.match(
@@ -563,7 +663,7 @@ export function parseMooc2ChapterListResponse(
         status = 'not_started'
       }
 
-      const taskType = classifyChaoxingTaskType(li, title)
+      const classified = classifyChaoxingTaskNode(li, title, chapterId)
 
       const taskUrl = `https://mooc1.chaoxing.com/mycourse/studentstudy?chapterId=${chapterId}&courseId=${courseId}&clazzid=${clazzId}&cpi=${cpi}&enc=${enc}&mooc2=1`
 
@@ -574,10 +674,13 @@ export function parseMooc2ChapterListResponse(
         parentId,
         title,
         order: currentOrder++,
-        taskType,
+        taskType: classified.taskType,
         taskUrl,
         status,
-        source: 'mooc2-chapter'
+        source: 'mooc2-chapter',
+        detectionMethod: classified.detectionMethod,
+        confidence: classified.confidence,
+        attachments: []
       })
     }
   }
@@ -910,4 +1013,91 @@ export async function fetchChaoxingSignIns(ses: SessionLike): Promise<{
     reason: events.length === 0 ? '当前在读课程无进行中的签到活动' : `已同步 ${targetCourses.length} 门在读课程签到记录`
   }
 }
+
+/** 通过 Session 拉取学习通全量课堂活动（多课程汇总：签到、问卷、测验、通知等） */
+export async function fetchChaoxingActivities(ses: SessionLike): Promise<{
+  state: 'supported' | 'unauthenticated' | 'expired' | 'unverified' | 'error'
+  activities: ClassroomActivityItem[]
+  fetchedAt: string
+  reason: string | null
+}> {
+  const courseRes = await fetchChaoxingCourses(ses)
+  if (!courseRes.ok) {
+    return {
+      state: courseRes.state,
+      activities: [],
+      fetchedAt: new Date().toISOString(),
+      reason: courseRes.error ?? '无法拉取课程'
+    }
+  }
+
+  const activities: ClassroomActivityItem[] = []
+  const targetCourses = courseRes.courses
+
+  await Promise.all(
+    targetCourses.map(async (course) => {
+      try {
+        const reqUrl = CHAOXING_ENDPOINTS.activeList(course.courseId, course.classId, true)
+        const resp = await ses.fetch(reqUrl, { method: 'GET' })
+        if (!resp.ok) return
+        const json = (await resp.json().catch(() => null)) as unknown
+        const parsed = parseActiveListResponse(json, course.courseId, course.classId)
+        if (!parsed.ok) return
+
+        for (const act of parsed.activities) {
+          let signInKind: import('@shared/types').SignInKind = 'unknown'
+          if (act.isSignIn) {
+            if (act.title.includes('位置')) signInKind = 'location'
+            else if (act.title.includes('二维码')) signInKind = 'qr'
+            else if (act.title.includes('签到码') || act.title.includes('手势')) signInKind = 'code'
+            else signInKind = 'normal'
+          }
+
+          const status: 'open' | 'closed' | 'pending' | 'unknown' =
+            act.status === 1 ? 'open' : act.status === 2 ? 'closed' : act.status === 0 ? 'pending' : 'unknown'
+
+          activities.push({
+            id: `cx-act-${act.id}`,
+            platformId: 'chaoxing',
+            courseId: course.courseId,
+            courseName: course.name,
+            classId: course.classId,
+            title: act.title,
+            category: act.category,
+            status,
+            startAt: act.startAt ?? null,
+            endAt: act.endAt ?? null,
+            sourceUrl: `https://mobilelearn.chaoxing.com/v2/apis/active/getPPTActiveInfo?activeId=${act.id}`,
+            fetchedAt: new Date().toISOString(),
+            locationRequired: signInKind === 'location',
+            locationText: signInKind === 'location' ? '需现场定位' : null,
+            signInKind,
+            confidence: 'high'
+          })
+        }
+      } catch {
+        // 单个课程异常不阻断其它课程查询
+      }
+    })
+  )
+
+  // 排序：进行中(open) > 未开始(pending) > 已结束(closed)，同状态按开始时间降序
+  const orderWeight = { open: 0, pending: 1, unknown: 2, closed: 3 }
+  activities.sort((a, b) => {
+    const diff = (orderWeight[a.status] ?? 2) - (orderWeight[b.status] ?? 2)
+    if (diff !== 0) return diff
+    return (b.startAt || '').localeCompare(a.startAt || '')
+  })
+
+  return {
+    state: 'supported',
+    activities,
+    fetchedAt: new Date().toISOString(),
+    reason:
+      activities.length === 0
+        ? '在读课程中暂无已发布的课堂活动'
+        : `已同步 ${targetCourses.length} 门在读课程，共获取 ${activities.length} 项课堂活动`
+  }
+}
+
 

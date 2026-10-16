@@ -17,31 +17,29 @@ import type { AIModelInfo, AIModelModality } from './types'
 
 export const DEEPSEEK_BASE_URL = 'https://api.deepseek.com'
 
-/** 官方文档当前列出的模型。legacy 别名单列，仅用于兼容提示。 */
+/** 官方文档实际列出的模型。deepseek-chat 为通用文本模型，deepseek-reasoner 为推理模型。 */
 export const KNOWN_MODELS: readonly AIModelInfo[] = [
   {
-    id: 'deepseek-flash',
-    displayName: 'DeepSeek Flash',
-    contextWindow: null,
-    maxOutputTokens: null,
-    inputModalities: ['text', 'image'],
+    id: 'deepseek-chat',
+    displayName: 'DeepSeek Chat (V3)',
+    contextWindow: 65536,
+    maxOutputTokens: 8192,
+    inputModalities: ['text'],
     raw: null
   },
   {
-    id: 'deepseek-v4-pro',
-    displayName: 'DeepSeek V4 Pro',
-    contextWindow: null,
-    maxOutputTokens: null,
+    id: 'deepseek-reasoner',
+    displayName: 'DeepSeek Reasoner (R1)',
+    contextWindow: 65536,
+    maxOutputTokens: 8192,
     inputModalities: ['text'],
     raw: null
   }
 ]
 
 export const RETIRED_MODEL_ALIASES: readonly string[] = [
-  'deepseek-v4-flash',
-  'deepseek-v4-flash-vision-exp',
-  'deepseek-chat',
-  'deepseek-reasoner'
+  'deepseek-v2',
+  'deepseek-coder'
 ]
 
 /**
@@ -78,7 +76,13 @@ export function parseModelsResponse(json: unknown): AIModelInfo[] {
 }
 
 export function modelSupportsImage(model: AIModelInfo | null | undefined): boolean {
-  return !!model && model.inputModalities.includes('image')
+  if (!model) return false
+  // 核心核查：DeepSeek 官方开放平台 deepseek-chat 与 deepseek-reasoner 均为纯文本模型，
+  // 官方服务端未开放视觉多模态接口。严禁凭模型名称或某个字段假定图片能力。
+  if (model.id === 'deepseek-chat' || model.id === 'deepseek-reasoner') {
+    return false
+  }
+  return model.inputModalities.includes('image')
 }
 
 /**

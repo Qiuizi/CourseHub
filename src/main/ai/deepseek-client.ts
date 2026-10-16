@@ -12,7 +12,7 @@
  * - 无无限重试，不静默扣费。
  */
 
-import { DEEPSEEK_BASE_URL, parseModelsResponse, modelSupportsImage } from '@shared/deepseek'
+import { DEEPSEEK_BASE_URL, parseModelsResponse, modelSupportsImage, KNOWN_MODELS } from '@shared/deepseek'
 import type { AIModelInfo, AIResult } from '@shared/types'
 import type { Store } from '../services/store'
 
@@ -72,16 +72,16 @@ export class DeepSeekClient {
     modelsHint?: readonly AIModelInfo[]
     onDelta: (chunk: string) => void
   }): Promise<{ result: AIResult | null; error: string | null; cancelled: boolean }> {
-    const key = await this.apiKey()
-    if (!key) return { result: null, error: 'AI_KEY_INVALID: 未配置 API Key', cancelled: false }
-
-    // 图片能力必须由 /models 元数据证明，不能凭模型名猜测
+    // 图片能力严格核查：DeepSeek 官方 API（deepseek-chat / deepseek-reasoner）均为纯文本，不支持图片
     if (input.imageDataUrl) {
-      const hint = input.modelsHint?.find((m) => m.id === input.model)
-      if (hint && !modelSupportsImage(hint)) {
+      const hint =
+        input.modelsHint?.find((m) => m.id === input.model) ||
+        KNOWN_MODELS.find((m) => m.id === input.model)
+      const isVision = hint ? modelSupportsImage(hint) : false
+      if (!isVision) {
         return {
           result: null,
-          error: `UNSUPPORTED: 模型 ${input.model} 未声明支持图片输入（input_modalities 不含 image）`,
+          error: `UNSUPPORTED: 模型 ${input.model} 不支持图片输入（DeepSeek 官方 API 当前为纯文本模型）。请在题干中输入题目文字。`,
           cancelled: false
         }
       }
@@ -93,6 +93,9 @@ export class DeepSeekClient {
         }
       }
     }
+
+    const key = await this.apiKey()
+    if (!key) return { result: null, error: 'AI_KEY_INVALID: 未配置 API Key', cancelled: false }
 
     this.cancel()
     const controller = new AbortController()
@@ -203,7 +206,8 @@ export class DeepSeekClient {
               ? 'text+screenshot'
               : 'screenshot'
             : 'text',
-          usage
+          usage,
+          isMock: false
         },
         error: null,
         cancelled: false

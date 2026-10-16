@@ -8,7 +8,7 @@ import {
   Loader2,
   Globe
 } from 'lucide-react'
-import type { PlatformId, PlaybackObservation, GeoTestRun, ClassroomQuestion } from '@shared/types'
+import type { PlatformId, PlaybackObservation, GeoTestRun, ClassroomQuestion, PlayPolicy, TaskType } from '@shared/types'
 import { TopBar, SCENES, type SceneId, type PlatformEntry } from './components/TopBar'
 import { Drawer, type SubmitMode } from './components/Drawer'
 import { CapChip, Notice } from './components/ui'
@@ -45,6 +45,7 @@ export default function App(): JSX.Element {
   const [geoBusy, setGeoBusy] = useState(false)
 
   const [continuous, setContinuous] = useState(false)
+  const [playPolicy, setPlayPolicy] = useState<PlayPolicy>('video_only')
   const [autoMute, setAutoMute] = useState(true)
   const [submitMode, setSubmitMode] = useState<SubmitMode>('confirm')
   const [volume, setVolume] = useState(1)
@@ -121,15 +122,11 @@ export default function App(): JSX.Element {
       if (target?.sourceUrl && (target.sourceUrl.startsWith('http://') || target.sourceUrl.startsWith('https://'))) {
         void api.browser.navigate(activeId, target.sourceUrl)
       }
-      if (target?.taskType && target.taskType !== 'video') {
-        void api.video.stopContinuous()
-        setContinuous(false)
-        pushActivity(`连播遇到非视频任务（${target.title}），已安全暂停等待操作`)
-        setNotice(`连播遇到非视频任务（${target.title}），已安全暂停等待操作`)
-      } else {
-        void api.video.observe(activeId, evt.currentTaskId)
-        pushActivity(`自动连续播放：切换至 ${target?.title ?? evt.currentTaskId}`)
-        setNotice(`自动连播：已切换至 ${target?.title ?? evt.currentTaskId}`)
+      void api.video.observe(activeId, evt.currentTaskId)
+      pushActivity(`自动连续播放：切换至 ${target?.title ?? evt.currentTaskId}`)
+      setNotice(`自动连播：已切换至 ${target?.title ?? evt.currentTaskId}`)
+      if (!target?.taskType || target.taskType === 'unknown') {
+        void api.video.inspectChapter({ platformId: activeId, chapterId: evt.currentTaskId })
       }
     })
     const unsub3 = api.events.onContinuousCompleted(() => {
@@ -137,10 +134,41 @@ export default function App(): JSX.Element {
       pushActivity('连续播放队列已全部完成')
       setNotice('连续播放队列已全部完成')
     })
+    const unsub4 = api.events.onChapterInspected((res) => {
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === res.chapterId ? { ...t, taskType: res.taskType } : t
+        )
+      )
+      pushActivity(`章节 [${res.chapterId}] 任务组件探测完毕：${res.taskType}`)
+    })
+    const unsub5 = api.events.onTaskSkipped((evt) => {
+      pushActivity(`连播跳过非视频任务: ${evt.title}（自动跳过不代表平台任务完成）`)
+      setNotice(`连播跳过非视频任务: ${evt.title}（自动跳过不代表平台任务完成）`)
+    })
+    const unsub6 = api.events.onContinuousPausedNonVideo((evt) => {
+      setContinuous(false)
+      pushActivity(`连播遇到非视频任务（${evt.title}），已安全暂停等待操作`)
+      setNotice(`连播遇到非视频任务（${evt.title}），已安全暂停等待操作`)
+    })
+    const unsub7 = api.events.onContinuousError((evt) => {
+      setContinuous(false)
+      pushActivity(`连播异常中断: ${evt.message}`)
+      setNotice(`连播中断：${evt.message}`)
+    })
+    const unsub8 = api.events.onActivityNotify((act) => {
+      pushActivity(`【课堂活动通知】${act.courseName} · ${act.title}`)
+      setNotice(`【课堂活动进行中】${act.courseName} - ${act.title}，点击课堂活动查看`)
+    })
     return () => {
       unsub1()
       unsub2()
       unsub3()
+      unsub4()
+      unsub5()
+      unsub6()
+      unsub7()
+      unsub8()
     }
   }, [api, activeId, pushActivity])
 
@@ -280,20 +308,51 @@ export default function App(): JSX.Element {
     [activeId, api, pushActivity]
   )
 
+  const handlePolicyChange = useCallback(
+    (nextPolicy: PlayPolicy) => {
+      setPlayPolicy(nextPolicy)
+      void api.video.setContinuousPolicy(nextPolicy)
+      pushActivity(`连播策略切换为：${nextPolicy === 'stop_on_non_video' ? '遇到非视频暂停' : '仅播放视频'}`)
+    },
+    [api, pushActivity]
+  )
+
   const handleContinuousChange = useCallback(
     (v: boolean) => {
-      const playableTasks = tasks.filter((t) => !t.taskType || t.taskType === 'video')
-      if (v && playableTasks.length === 0) {
+      const confirmedVideoTasks = tasks.filter((t) => t.taskType === 'video')
+      const allPlayableTasks = tasks.filter((t) => t.taskType === 'video' || t.taskType === 'unknown')
+
+      if (v && confirmedVideoTasks.length === 0 && allPlayableTasks.length === 0) {
         setNotice('当前课程章节没有可播放的视频任务')
         setContinuous(false)
         return
       }
+
       setContinuous(v)
-      pushActivity(v ? '开启连续播放' : '关闭连续播放')
-      if (v) void api.video.startContinuous(activeId, playableTasks.map((t) => t.id))
-      else void api.video.stopContinuous()
+      pushActivity(
+        v
+          ? `开启连续播放（策略：${playPolicy === 'stop_on_non_video' ? '遇到非视频暂停' : '仅播放视频'}）`
+          : '关闭连续播放'
+      )
+      if (v) {
+        const queuePayload = tasks.map((t) => ({
+          id: t.id,
+          title: t.title,
+          sourceUrl: t.sourceUrl,
+          taskType: (t.taskType as TaskType) || 'unknown'
+        }))
+        void api.video.startContinuous({
+          platformId: activeId,
+          courseId: selectedCourseName ?? 'default',
+          taskQueue: queuePayload,
+          initialTaskId: activeTaskId ?? undefined,
+          policy: playPolicy
+        })
+      } else {
+        void api.video.stopContinuous()
+      }
     },
-    [tasks, activeId, api, pushActivity]
+    [tasks, activeId, activeTaskId, selectedCourseName, playPolicy, api, pushActivity]
   )
 
   /**
@@ -318,8 +377,8 @@ export default function App(): JSX.Element {
 
   const handleEnterCourseStudy = useCallback(
     async (course: CourseItem) => {
-      // 切换课程时安全停止前序连播并复位状态
-      void api.video.stopContinuous()
+      // 切换课程时彻底清理原队列及观察器，杜绝跨课程串队列
+      void api.video.resetCourse()
       setContinuous(false)
 
       setSelectedCourseName(course.name)
@@ -382,6 +441,9 @@ export default function App(): JSX.Element {
         }
         void startObserving(first.id)
         pushActivity(`已载入任务：${first.title}`)
+        if (!first.taskType || first.taskType === 'unknown') {
+          void api.video.inspectChapter({ platformId: activeId, chapterId: first.id })
+        }
       } catch (err) {
         setNotice(`加载章节失败: ${err instanceof Error ? err.message : String(err)}`)
       }
@@ -509,6 +571,8 @@ export default function App(): JSX.Element {
             activeTaskId={activeTaskId}
             continuous={continuous}
             onContinuousChange={handleContinuousChange}
+            policy={playPolicy}
+            onPolicyChange={handlePolicyChange}
             autoMute={autoMute}
             volume={volume}
             rate={rate}
@@ -523,6 +587,9 @@ export default function App(): JSX.Element {
               }
               void startObserving(id)
               pushActivity(`切换到任务 ${t?.title ?? id}`)
+              if (!t?.taskType || t.taskType === 'unknown') {
+                void api.video.inspectChapter({ platformId: activeId, chapterId: id })
+              }
             }}
             onCommand={(a, v) => {
               if (a === 'mute') setAutoMute(true)
@@ -720,7 +787,14 @@ export default function App(): JSX.Element {
           <SignInScene
             platformId={activeId}
             platformName={current?.name ?? '测试台'}
-            onOpenPlatform={() => void openPlatform(activeId)}
+            onOpenPlatform={(url) => {
+              setScene('browser')
+              void ensureOpen(activeId).then(() => {
+                if (url) void api.browser.navigate(activeId, url)
+                else void openPlatform(activeId)
+              })
+            }}
+            onOpenGeoScene={() => setScene('geo')}
           />
         )
 

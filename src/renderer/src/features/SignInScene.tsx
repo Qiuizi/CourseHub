@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, useRef } from 'react'
 import type { ReactNode } from 'react'
 import {
   MapPin,
@@ -8,56 +8,144 @@ import {
   AlertCircle,
   ExternalLink,
   Clock,
-  Info
+  Info,
+  Timer
 } from 'lucide-react'
-import { Card, CapChip, Empty, Notice, Rows } from '../components/ui'
+import { Card, Empty, Notice, Rows } from '../components/ui'
+import type { ClassroomActivityItem } from '@shared/types'
 import { isStale } from '@shared/signin'
 
 export interface SignInSceneProps {
   platformId: string
   platformName: string
-  onOpenPlatform: () => void
+  onOpenPlatform: (url?: string) => void
+  onOpenGeoScene?: () => void
 }
 
-interface SignInEventItem {
-  id: string
-  title: string
-  kind: string
-  status: string
-  startAt: string | null
-  endAt: string | null
-  locationRequired: boolean
-  locationText: string | null
-}
+type CategoryFilter = 'all' | 'sign_in' | 'quiz' | 'questionnaire' | 'notice' | 'other'
+type StatusFilter = 'all' | 'open' | 'pending' | 'closed'
 
-interface SignInPayload {
-  state: string
-  events: SignInEventItem[]
-  fetchedAt: string | null
-  reason: string | null
+function fmtDateTime(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  try {
+    const d = new Date(iso)
+    if (isNaN(d.getTime())) return iso
+    const month = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    const hours = String(d.getHours()).padStart(2, '0')
+    const minutes = String(d.getMinutes()).padStart(2, '0')
+    return `${month}-${day} ${hours}:${minutes}`
+  } catch {
+    return iso
+  }
 }
 
 /**
- * 签到中心。
+ * 课堂活动与签到工作台。
  *
- * 契约：检测到活动 ≠ 已完成签到。没有真实平台数据源时明确返回
- * 「未验证」，绝不生成占位签到条目。测试台支持端到端真实测试打卡。
+ * 核心能力（开发规范 §4）：
+ * 1. 多课程活动汇总（签到、问卷、测验、通知及其他互动）。
+ * 2. 精确分类与时间展示（真实开始/结束时间，状态区隔 open / pending / closed）。
+ * 3. 支持配置自动刷新间隔（手动 / 30s / 60s / 120s / 300s）并记录最近成功同步时间。
+ * 4. 点击活动可直达平台内嵌页面；保留本地测试台定位模拟与测试打卡能力。
  */
-export function SignInScene({ platformId, platformName, onOpenPlatform }: SignInSceneProps): ReactNode {
-  const [data, setData] = useState<SignInPayload | null>(null)
+export function SignInScene({
+  platformId,
+  platformName,
+  onOpenPlatform,
+  onOpenGeoScene
+}: SignInSceneProps): ReactNode {
+  const [activities, setActivities] = useState<ClassroomActivityItem[]>([])
+  const [platformState, setPlatformState] = useState<string>('unknown')
+  const [stateReason, setStateReason] = useState<string | null>(null)
+  const [lastSyncAt, setLastSyncAt] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [triggeringId, setTriggeringId] = useState<string | null>(null)
   const [triggerMsg, setTriggerMsg] = useState<string | null>(null)
 
-  const load = useCallback(async () => {
+  // 筛选与自动刷新
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>('all')
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [autoRefreshInterval, setAutoRefreshInterval] = useState<number>(60) // 默认 60 秒
+  const [countdown, setCountdown] = useState<number>(60)
+
+  const countdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const loadActivities = useCallback(async () => {
     setLoading(true)
     try {
-      const r = await window.coursehub.classroom.todaySignIns(platformId as any)
-      setData(r.ok ? (r.data as SignInPayload) : { state: 'error', events: [], fetchedAt: null, reason: r.error.message })
+      const res = await window.coursehub.classroom.activities(platformId as any)
+      if (res.ok) {
+        setActivities(res.data.activities || [])
+        setPlatformState(res.data.state)
+        setStateReason(res.data.reason)
+        setLastSyncAt(res.data.fetchedAt || new Date().toISOString())
+      } else {
+        // 尝试兜底旧签到端点
+        const fb = await window.coursehub.classroom.todaySignIns(platformId as any)
+        if (fb.ok && fb.data.events) {
+          const mapped: ClassroomActivityItem[] = (fb.data.events as any[]).map((ev) => ({
+            id: ev.id,
+            platformId: platformId as any,
+            courseId: ev.courseId || 'unknown',
+            courseName: ev.courseName || '未命名课程',
+            classId: 'default',
+            title: ev.title,
+            category: 'sign_in',
+            status: ev.status === 'open' ? 'open' : ev.status === 'closed' ? 'closed' : 'pending',
+            startAt: ev.startAt,
+            endAt: ev.endAt,
+            sourceUrl: ev.sourceUrl || null,
+            fetchedAt: ev.fetchedAt || new Date().toISOString(),
+            locationRequired: Boolean(ev.locationRequired),
+            locationText: ev.locationText || null,
+            signInKind: ev.kind || 'normal',
+            confidence: 'high'
+          }))
+          setActivities(mapped)
+          setPlatformState(fb.data.state)
+          setStateReason(fb.data.reason)
+          setLastSyncAt(fb.data.fetchedAt || new Date().toISOString())
+        } else {
+          setPlatformState('error')
+          setStateReason(res.error.message)
+        }
+      }
+    } catch (err) {
+      setPlatformState('error')
+      setStateReason(err instanceof Error ? err.message : String(err))
     } finally {
       setLoading(false)
+      setCountdown(autoRefreshInterval)
     }
+  }, [platformId, autoRefreshInterval])
+
+  // 挂载与自动刷新倒计时
+  useEffect(() => {
+    void loadActivities()
   }, [platformId])
+
+  useEffect(() => {
+    if (autoRefreshInterval <= 0) {
+      if (countdownTimerRef.current) clearInterval(countdownTimerRef.current)
+      return
+    }
+
+    setCountdown(autoRefreshInterval)
+    countdownTimerRef.current = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev <= 1) {
+          void loadActivities()
+          return autoRefreshInterval
+        }
+        return prev - 1
+      })
+    }, 1000)
+
+    return () => {
+      if (countdownTimerRef.current) clearInterval(countdownTimerRef.current)
+    }
+  }, [autoRefreshInterval, loadActivities])
 
   const handleTrigger = async (id: string) => {
     setTriggeringId(id)
@@ -66,7 +154,7 @@ export function SignInScene({ platformId, platformName, onOpenPlatform }: SignIn
       const res = await window.coursehub.testbed.triggerSignIn(id)
       if (res.ok) {
         setTriggerMsg(`活动 [${id}]：${res.data.message}`)
-        void load()
+        void loadActivities()
       } else {
         setTriggerMsg(`活动 [${id}] 执行失败：${res.error.message}`)
       }
@@ -75,38 +163,176 @@ export function SignInScene({ platformId, platformName, onOpenPlatform }: SignIn
     }
   }
 
-  useEffect(() => {
-    void load()
-  }, [load])
+  // 过滤活动
+  const filteredActivities = activities.filter((act) => {
+    if (categoryFilter !== 'all') {
+      if (categoryFilter === 'sign_in' && act.category !== 'sign_in') return false
+      if (categoryFilter === 'quiz' && act.category !== 'quiz' && act.category !== 'exercise') return false
+      if (categoryFilter === 'questionnaire' && act.category !== 'questionnaire') return false
+      if (categoryFilter === 'notice' && act.category !== 'notice') return false
+      if (
+        categoryFilter === 'other' &&
+        (act.category === 'sign_in' ||
+          act.category === 'quiz' ||
+          act.category === 'exercise' ||
+          act.category === 'questionnaire' ||
+          act.category === 'notice')
+      )
+        return false
+    }
+    if (statusFilter !== 'all' && act.status !== statusFilter) return false
+    return true
+  })
 
-  const stale =
-    data?.fetchedAt != null && isStale(data.fetchedAt, new Date().toISOString(), 5 * 60 * 1000)
+  const isDataStale = lastSyncAt != null && isStale(lastSyncAt, new Date().toISOString(), 5 * 60 * 1000)
 
   return (
-    <div style={{ maxWidth: 860, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div style={{ maxWidth: 960, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
       {triggerMsg && (
         <Notice tone={triggerMsg.includes('失败') || triggerMsg.includes('超出') ? 'error' : 'info'}>
           {triggerMsg}
         </Notice>
       )}
 
+      {/* 顶部控制栏与统计 */}
       <Card
-        title="今日签到活动"
+        title="课堂活动工作台"
         action={
-          <button type="button" className="btn" onClick={() => void load()} disabled={loading} data-testid="signin-refresh">
-            <RefreshCw size={13} className={loading ? 'spin' : undefined} />
-            手动刷新
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {/* 自动刷新间隔选择 */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
+              <Timer size={13} style={{ color: 'var(--ch-text-3)' }} />
+              <span style={{ color: 'var(--ch-text-2)' }}>自动同步:</span>
+              <select
+                className="select"
+                style={{ fontSize: 11, padding: '2px 6px', height: 26 }}
+                value={autoRefreshInterval}
+                onChange={(e) => setAutoRefreshInterval(Number(e.target.value))}
+              >
+                <option value={0}>手动刷新</option>
+                <option value={30}>每 30 秒</option>
+                <option value={60}>每 60 秒</option>
+                <option value={120}>每 120 秒</option>
+                <option value={300}>每 5 分钟</option>
+              </select>
+              {autoRefreshInterval > 0 && (
+                <span style={{ fontSize: 10, color: 'var(--ch-text-3)', minWidth: 28 }}>
+                  ({countdown}s)
+                </span>
+              )}
+            </div>
+
+            <button
+              type="button"
+              className="btn"
+              onClick={() => void loadActivities()}
+              disabled={loading}
+              data-testid="signin-refresh"
+            >
+              <RefreshCw size={13} className={loading ? 'spin' : undefined} />
+              手动同步
+            </button>
+          </div>
         }
       >
-        {loading && !data ? (
-          <Empty text="正在读取…" />
-        ) : data?.state === 'error' ? (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 11.5, color: 'var(--ch-text-2)' }}>
+              当前平台：<strong>{platformName}</strong>
+            </span>
+            <span style={{ fontSize: 11, color: 'var(--ch-text-3)' }}>
+              最近成功同步：{lastSyncAt ? fmtDateTime(lastSyncAt) : '尚未同步'}
+            </span>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <span className="chip chip-tint">共 {activities.length} 项活动</span>
+            <span className="chip chip-emerald">
+              进行中 {activities.filter((a) => a.status === 'open').length}
+            </span>
+          </div>
+        </div>
+
+        {/* 筛选选项卡 */}
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+            marginTop: 14,
+            paddingTop: 12,
+            borderTop: '1px solid var(--ch-hairline)'
+          }}
+        >
+          {/* 分类过滤 */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 11, color: 'var(--ch-text-3)', marginRight: 4 }}>类型：</span>
+            {(
+              [
+                { id: 'all', label: '全部' },
+                { id: 'sign_in', label: '签到打卡' },
+                { id: 'quiz', label: '随堂测验' },
+                { id: 'questionnaire', label: '调查问卷' },
+                { id: 'notice', label: '教学通知' },
+                { id: 'other', label: '其它互动' }
+              ] as const
+            ).map((cat) => (
+              <button
+                key={cat.id}
+                type="button"
+                className={`platform-pill ${categoryFilter === cat.id ? 'active' : ''}`}
+                style={{
+                  padding: '3px 10px',
+                  fontSize: 11,
+                  background: categoryFilter === cat.id ? 'var(--ch-primary)' : 'var(--ch-subtle)',
+                  color: categoryFilter === cat.id ? '#fff' : 'inherit'
+                }}
+                onClick={() => setCategoryFilter(cat.id)}
+              >
+                {cat.label}
+              </button>
+            ))}
+          </div>
+
+          {/* 状态过滤 */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 11, color: 'var(--ch-text-3)', marginRight: 4 }}>状态：</span>
+            {(
+              [
+                { id: 'all', label: '全部状态' },
+                { id: 'open', label: '进行中' },
+                { id: 'pending', label: '未开始' },
+                { id: 'closed', label: '已结束' }
+              ] as const
+            ).map((st) => (
+              <button
+                key={st.id}
+                type="button"
+                className={`platform-pill ${statusFilter === st.id ? 'active' : ''}`}
+                style={{
+                  padding: '3px 10px',
+                  fontSize: 11,
+                  background: statusFilter === st.id ? 'var(--ch-primary)' : 'var(--ch-subtle)',
+                  color: statusFilter === st.id ? '#fff' : 'inherit'
+                }}
+                onClick={() => setStatusFilter(st.id)}
+              >
+                {st.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </Card>
+
+      {/* 活动列表区 */}
+      <Card title="活动日程与任务明细">
+        {loading && activities.length === 0 ? (
+          <Empty text="正在读取平台课程活动..." />
+        ) : platformState === 'error' ? (
           <Notice tone="error">
             <AlertCircle size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: -1 }} />
-            读取失败：{data.reason}
+            活动读取失败：{stateReason}
           </Notice>
-        ) : data?.state === 'unauthenticated' ? (
+        ) : platformState === 'unauthenticated' ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <Empty
               icon={<CalendarClock size={22} />}
@@ -116,7 +342,7 @@ export function SignInScene({ platformId, platformName, onOpenPlatform }: SignIn
               <button
                 type="button"
                 className="btn btn-primary"
-                onClick={onOpenPlatform}
+                onClick={() => onOpenPlatform()}
                 data-testid="signin-login-btn"
               >
                 <ExternalLink size={13} />
@@ -124,127 +350,186 @@ export function SignInScene({ platformId, platformName, onOpenPlatform }: SignIn
               </button>
             </div>
             <Notice tone="info">
-              CourseHub 遵循安全设计原则：不要求您在聊天或外部输入密码，
-              而是直接复用您在内置独立 Session 中安全完成的平台登录态。
-              {data.reason ? `（${data.reason}）` : ''}
+              CourseHub 严格保护账号安全：不要求用户在聊天界面输入密码，直接复用您在内置安全 Session 中的官方登录凭证。
+              {stateReason ? `（${stateReason}）` : ''}
             </Notice>
           </div>
-        ) : data?.state === 'unverified' ? (
+        ) : platformState === 'unverified' ? (
           <>
             <Empty
               icon={<CalendarClock size={22} />}
-              text={`${platformName} 的签到数据源尚未在真实账号验证，因此不展示任何签到条目。`}
+              text={`${platformName} 的活动数据源尚未在真实账号验证，因此不展示任何未经确认的活动条目。`}
             />
             <Notice tone="warn">
-              这不是「今天没有签到」，而是<strong>「无法确认」</strong>。
-              两者必须区分：确认为空 = 平台返回空列表；读取失败/未支持 = 拿不到可信数据。
-              {data.reason ? ` 原因：${data.reason}` : ''}
+              无法确认 ≠ 今天没有活动。数据源未经验证时绝不伪造虚假数据。
+              {stateReason ? ` 原因：${stateReason}` : ''}
             </Notice>
           </>
-        ) : data?.events && data.events.length > 0 ? (
+        ) : filteredActivities.length > 0 ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {data.events.map((ev) => (
-              <div
-                key={ev.id}
-                style={{
-                  padding: 16,
-                  borderRadius: 'var(--r-block)',
-                  background: 'var(--ch-subtle)',
-                  border: '1px solid var(--ch-border)',
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  flexWrap: 'wrap',
-                  gap: 12
-                }}
-                data-testid={`signin-item-${ev.id}`}
-              >
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                    <strong>{ev.title}</strong>
-                    <span className={`chip ${ev.kind === 'location' ? 'chip-tint' : ''}`}>{ev.kind}</span>
-                    <span className="chip chip-emerald">{ev.status}</span>
-                  </div>
-                  <div style={{ fontSize: 11.5, color: 'var(--ch-text-3)' }}>
-                    {ev.locationText ? `位置限制：${ev.locationText}` : '无需位置，点击即可完成打卡'}
-                  </div>
-                </div>
+            {filteredActivities.map((act) => {
+              const isOpen = act.status === 'open'
+              const isClosed = act.status === 'closed'
+              const isPending = act.status === 'pending'
+              const isSignIn = act.category === 'sign_in'
+              const isQuiz = act.category === 'quiz' || act.category === 'exercise'
+              const isSurvey = act.category === 'questionnaire'
+              const isNotice = act.category === 'notice'
 
-                <div style={{ display: 'flex', gap: 8 }}>
-                  {platformId === 'testbed' ? (
+              return (
+                <div
+                  key={act.id}
+                  style={{
+                    padding: 16,
+                    borderRadius: 'var(--r-block)',
+                    background: 'var(--ch-subtle)',
+                    border: '1px solid var(--ch-border)',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: 12
+                  }}
+                  data-testid={`signin-item-${act.id}`}
+                >
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+                      <span
+                        className="chip chip-tint"
+                        style={{ fontSize: 10.5, fontWeight: 600, padding: '2px 6px' }}
+                      >
+                        {act.courseName}
+                      </span>
+                      <strong style={{ fontSize: 13 }}>{act.title}</strong>
+                      <span
+                        className={`chip ${
+                          isSignIn
+                            ? 'chip-accent'
+                            : isQuiz
+                              ? 'chip-warning'
+                              : isSurvey
+                                ? 'chip-tint'
+                                : 'chip-neutral'
+                        }`}
+                        style={{ fontSize: 10 }}
+                      >
+                        {isSignIn
+                          ? act.signInKind === 'location'
+                            ? '位置签到'
+                            : act.signInKind === 'qr'
+                              ? '二维码签到'
+                              : act.signInKind === 'code'
+                                ? '签到码'
+                                : '普通签到'
+                          : isQuiz
+                            ? '随堂测验'
+                            : isSurvey
+                              ? '问卷调查'
+                              : isNotice
+                                ? '通知公告'
+                                : '课堂互动'}
+                      </span>
+                      <span
+                        className={`chip ${
+                          isOpen ? 'chip-emerald' : isPending ? 'chip-warning' : 'chip-neutral'
+                        }`}
+                        style={{ fontSize: 10 }}
+                      >
+                        {isOpen ? '进行中' : isPending ? '未开始' : isClosed ? '已结束' : '未知'}
+                      </span>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 11, color: 'var(--ch-text-3)', flexWrap: 'wrap' }}>
+                      <span>开始: {fmtDateTime(act.startAt)}</span>
+                      <span>截止: {fmtDateTime(act.endAt)}</span>
+                      {act.locationRequired && (
+                        <span style={{ color: 'var(--ch-warning)' }}>
+                          <MapPin size={11} style={{ display: 'inline', verticalAlign: -1 }} />{' '}
+                          {act.locationText ?? '需现场定位'}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* 动作区 */}
+                  <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                    {platformId === 'testbed' && isSignIn && (
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        style={{ fontSize: 11 }}
+                        onClick={() => handleTrigger(act.id)}
+                        disabled={triggeringId === act.id}
+                      >
+                        {triggeringId === act.id ? '正在打卡…' : '执行测试打卡'}
+                      </button>
+                    )}
+
+                    {act.locationRequired && onOpenGeoScene && (
+                      <button
+                        type="button"
+                        className="btn"
+                        style={{ fontSize: 11 }}
+                        onClick={onOpenGeoScene}
+                        title="打开定位测试台进行 GPS 模拟"
+                      >
+                        <MapPin size={12} /> 定位测试
+                      </button>
+                    )}
+
                     <button
                       type="button"
                       className="btn btn-primary"
                       style={{ fontSize: 11 }}
-                      onClick={() => handleTrigger(ev.id)}
-                      disabled={triggeringId === ev.id}
+                      onClick={() => onOpenPlatform(act.sourceUrl ?? undefined)}
                     >
-                      {triggeringId === ev.id ? '正在打卡…' : '执行测试打卡'}
+                      <ExternalLink size={12} /> 进入活动页面
                     </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="btn"
-                      style={{ fontSize: 11 }}
-                      onClick={() => {
-                        onOpenPlatform()
-                      }}
-                    >
-                      <ExternalLink size={11} /> 打开活动页面
-                    </button>
-                  )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         ) : (
-          <Empty text="当前没有进行中的签到活动。" />
+          <Empty text="当前筛选条件下没有匹配的课堂活动。" />
         )}
 
-        {stale && (
-          <div style={{ marginTop: 10 }}>
+        {isDataStale && (
+          <div style={{ marginTop: 12 }}>
             <Notice tone="warn">
               <Clock size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: -1 }} />
-              数据已超过 5 分钟，可能过期。
+              数据同步时间已超过 5 分钟，建议点击「手动同步」获取最新课堂动态。
             </Notice>
           </div>
         )}
       </Card>
 
-      {/* 状态语义 */}
-      <Card title="状态语义">
+      {/* 状态语义说明 */}
+      <Card title="状态与数据源契约">
         <Rows
           items={[
             {
-              k: '待开始',
-              v: <span className="chip">pending</span>
+              k: '未开始',
+              v: <span className="chip chip-warning">pending · 活动已发布但尚未到开放作答时间</span>
             },
-            { k: '进行中', v: <span className="chip chip-tint">open</span> },
             {
-              k: '已签到',
-              v: (
-                <span>
-                  <span className="chip chip-emerald">checked_in</span>
-                  <span style={{ fontSize: 10.5, color: 'var(--ch-text-3)', marginLeft: 8 }}>
-                    仅当平台接口本次明确返回证据
-                  </span>
-                </span>
-              )
+              k: '进行中',
+              v: <span className="chip chip-emerald">open · 正在进行，可进入页面参与或签到</span>
             },
-            { k: '已结束', v: <span className="chip chip-neutral">closed</span> },
-            { k: '未知', v: <span className="chip">unknown</span> }
+            {
+              k: '已结束',
+              v: <span className="chip chip-neutral">closed · 活动时间截止</span>
+            },
+            {
+              k: '通知去重',
+              v: <span>同一活动仅在首次检测到处于进行中（open）时触发通知提醒，杜绝循环轰炸</span>
+            }
           ]}
         />
-        <div style={{ marginTop: 12 }}>
-          <Notice tone="info">
-            本地记忆只能表达「已处理过该活动」，<strong>永远不会</strong>把状态升级为「已签到」。
-            只有平台接口的明确响应可以。
-          </Notice>
-        </div>
       </Card>
 
-      {/* 定位型签到 */}
-      <Card title="定位型签到">
+      {/* 定位型签到指引 */}
+      <Card title="定位型签到与模拟">
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
           <div
             style={{
@@ -263,40 +548,30 @@ export function SignInScene({ platformId, platformName, onOpenPlatform }: SignIn
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <p style={{ fontSize: 12, margin: 0, lineHeight: 1.7 }}>
-              若平台要求位置，此处显示平台<strong>确实提供</strong>的位置要求与距离限制。
-              未取得可信字段时不显示推测值。
+              若平台要求现场位置，工作台会展示平台<strong>官方明确给出</strong>的位置要求与距离范围。
+              自有测试站点支持通过 CDP 模拟精确定位与地图选点打卡，不影响生产平台。
             </p>
             <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
-              <button type="button" className="btn btn-primary" onClick={onOpenPlatform}>
+              <button type="button" className="btn btn-primary" onClick={() => onOpenPlatform()}>
                 <ExternalLink size={13} />
-                打开官方签到页面
+                打开平台活动列表
               </button>
-              <button type="button" className="btn" onClick={() => undefined}>
-                <MapPin size={13} />
-                打开定位测试工作台
-              </button>
+              {onOpenGeoScene && (
+                <button type="button" className="btn" onClick={onOpenGeoScene}>
+                  <MapPin size={13} />
+                  打开定位模拟测试
+                </button>
+              )}
             </div>
-            <p style={{ fontSize: 10.5, color: 'var(--ch-text-3)', margin: '10px 0 0', lineHeight: 1.6 }}>
-              定位测试工作台只在独立测试会话生效，<strong>不代表现实位置，
-              也不由覆盖操作自行宣告签到成功</strong>。生产平台的实际签到结果需平台响应或人工确认。
-            </p>
           </div>
         </div>
       </Card>
 
-      <Card title="能力状态">
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <CapChip state="supported" reason="activelist 签到类型与活动结构已映射" />
-          <CapChip state="unsupported" reason="第三方平台签到提交接口待授权抓包逆向，当前支持在内置浏览器中完成" />
-          <span className="chip chip-neutral">platform: {platformId}</span>
-        </div>
-      </Card>
-
-      <Card title="说明">
+      <Card title="平台能力说明">
         <Notice tone="info">
           <Info size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: -1 }} />
           <CheckCircle2 size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: -1 }} />
-          第三方平台签到接口需要特定的动态签名及网络凭证，当前版本支持在内置浏览器页面中直接交互完成；自有测试站点已实现端到端自动化签到打卡验证。
+          课堂活动工作台支持自动轮询聚合多门课程的实际动态。对第三方平台需要二次签名、验证码或特殊交互的签到与测验，用户可点击「进入活动页面」在受保护的内置浏览器中直接人工完成，状态与提交均由平台官方接口确认。
         </Notice>
       </Card>
     </div>

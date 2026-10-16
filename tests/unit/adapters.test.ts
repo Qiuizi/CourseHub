@@ -10,7 +10,8 @@ import {
   buildActiveListRequest,
   parseActiveListResponse,
   classifyChaoxingActivityType,
-  classifyChaoxingTaskType
+  classifyChaoxingTaskType,
+  classifyChaoxingTaskNode
 } from '../../src/main/adapters/chaoxing'
 import {
   buildYktCourseListRequest,
@@ -269,6 +270,7 @@ describe('ChaoxingAdapter 解析与请求构造', () => {
           <ul>
             <li id="cur101" onclick="toOld('101', '101')">
               <a class="clicktitle" href="javascript:void(0);">1.1 军事科学的定义与研究对象</a>
+              <i class="icon-shipin"></i>
               <i class="icon_yiwanc"></i>
             </li>
             <li id="cur102" onclick="toOld('102', '102')">
@@ -279,6 +281,9 @@ describe('ChaoxingAdapter 解析与请求构造', () => {
               <a class="clicktitle" href="javascript:void(0);">1.3 拓展阅读文档</a>
               <i class="icon-wendang"></i>
             </li>
+            <li id="cur104" onclick="toOld('104', '104')">
+              <a class="clicktitle" href="javascript:void(0);">1.4 章节小结与答疑讨论</a>
+            </li>
           </ul>
         </div>
       </div>
@@ -286,7 +291,7 @@ describe('ChaoxingAdapter 解析与请求构造', () => {
     const res = parseMooc2ChapterListResponse(html, '255556164', '140001', '999')
     expect(res.ok).toBe(true)
     expect(res.enc).toBe('62f8373b9e4a3')
-    expect(res.chapters).toHaveLength(4)
+    expect(res.chapters).toHaveLength(5)
 
     // 一级单元
     const unit = res.chapters[0]!
@@ -294,14 +299,17 @@ describe('ChaoxingAdapter 解析与请求构造', () => {
     expect(unit.parentId).toBeNull()
     expect(unit.order).toBe(1)
     expect(unit.taskType).toBe('unknown')
+    expect(unit.detectionMethod).toBe('uninspected')
 
-    // 视频任务点
+    // 视频任务点（确凿依据图标）
     const t1 = res.chapters[1]!
     expect(t1.title).toBe('1.1 军事科学的定义与研究对象')
     expect(t1.parentId).toBe(unit.chapterId)
     expect(t1.chapterId).toBe('101')
     expect(t1.status).toBe('completed')
     expect(t1.taskType).toBe('video')
+    expect(t1.detectionMethod).toBe('catalog_icon')
+    expect(t1.confidence).toBe('medium')
     expect(t1.taskUrl).toContain('chapterId=101')
     expect(t1.taskUrl).toContain('courseId=255556164')
     expect(t1.taskUrl).toContain('clazzid=140001')
@@ -311,16 +319,25 @@ describe('ChaoxingAdapter 解析与请求构造', () => {
     const t2 = res.chapters[2]!
     expect(t2.title).toBe('1.2 单元测验')
     expect(t2.taskType).toBe('quiz')
+    expect(t2.detectionMethod).toBe('catalog_icon')
     expect(t2.status).toBe('not_started')
 
     // 文档
     const t3 = res.chapters[3]!
     expect(t3.title).toBe('1.3 拓展阅读文档')
     expect(t3.taskType).toBe('doc')
+    expect(t3.detectionMethod).toBe('catalog_icon')
     expect(t3.status).toBe('not_started')
+
+    // 无图标/无明确特征的普通小节：如实标注 unknown（待确认），绝不盲目归为视频
+    const t4 = res.chapters[4]!
+    expect(t4.title).toBe('1.4 章节小结与答疑讨论')
+    expect(t4.taskType).toBe('other') // 匹配讨论
+    expect(t4.detectionMethod).toBe('catalog_title')
+    expect(t4.confidence).toBe('low')
   })
 
-  it('classifyChaoxingTaskType 精准识别文档、测验、其他任务与视频', () => {
+  it('classifyChaoxingTaskType 精准识别文档、测验、其他任务与视频，拒绝标题猜测', () => {
     // 文档任务
     expect(classifyChaoxingTaskType('', '3.4 玩转图书馆文档版')).toBe('doc')
     expect(classifyChaoxingTaskType('<i class="icon-wendang"></i>', '第一节')).toBe('doc')
@@ -339,10 +356,22 @@ describe('ChaoxingAdapter 解析与请求构造', () => {
     expect(classifyChaoxingTaskType('', '课堂互动讨论')).toBe('other')
     expect(classifyChaoxingTaskType('', '在线直播')).toBe('other')
 
-    // 视频任务
-    expect(classifyChaoxingTaskType('', '3.1 实体图书馆使用指南')).toBe('video')
+    // 核心改进：严禁仅因标题包含数字节号 "1.1" 或 "3.1" 猜测为视频！
+    expect(classifyChaoxingTaskType('', '3.1 实体图书馆使用指南')).toBe('unknown')
+    expect(classifyChaoxingTaskType('', '1.1 军事科学概述')).toBe('unknown')
+    expect(classifyChaoxingTaskType('', '第二节 教学导论')).toBe('unknown')
+
+    // 视频任务必须有明确证据（HTML 图标、视频格式或微课关键词）
     expect(classifyChaoxingTaskType('<i class="icon-shipin"></i>', '第三章 专题讲解')).toBe('video')
-    expect(classifyChaoxingTaskType('', '1.1 军事科学概述')).toBe('video')
+    expect(classifyChaoxingTaskType('<i class="icon_video"></i>', '1.1 绪论')).toBe('video')
+    expect(classifyChaoxingTaskType('', '课程开场微课')).toBe('video')
+    expect(classifyChaoxingTaskType('', '实训操作录像.mp4')).toBe('video')
+
+    // 结构化节点分析
+    const nodeRes = classifyChaoxingTaskNode('', '1.1 军事科学概述')
+    expect(nodeRes.taskType).toBe('unknown')
+    expect(nodeRes.detectionMethod).toBe('uninspected')
+    expect(nodeRes.confidence).toBe('low')
   })
 
   it('parseMooc2ChapterListResponse 遇到 nodata 或空页面时返回空数组', () => {

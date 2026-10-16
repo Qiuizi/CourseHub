@@ -540,9 +540,15 @@ function PlanPreview({
 
 function formatResult(r: AIResult): string {
   const parts: string[] = []
+  if (r.isMock) {
+    parts.push('【Mock 模拟分析】（离线模拟数据，未扣除真实 API 配额）')
+  }
   if (r.explanation.trim()) parts.push(r.explanation.trim())
   if (r.suggestedAnswer) parts.push(`\n建议答案：${r.suggestedAnswer}`)
   if (r.uncertainty) parts.push(`\n不确定性：${r.uncertainty}`)
+  if (r.usage && (r.usage.promptTokens !== null || r.usage.completionTokens !== null)) {
+    parts.push(`\nToken 消耗：输入 ${r.usage.promptTokens ?? '—'} / 输出 ${r.usage.completionTokens ?? '—'}`)
+  }
   return parts.join('\n')
 }
 

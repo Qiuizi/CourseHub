@@ -15,7 +15,7 @@ import {
   HelpCircle,
   Layers
 } from 'lucide-react'
-import type { PlaybackObservation, TaskType } from '@shared/types'
+import type { PlaybackObservation, TaskType, PlayPolicy } from '@shared/types'
 import { observedProgressPercent, ALLOWED_PLAYBACK_RATES } from '@shared/video'
 import { Card, CapChip, Notice, Rows } from '../components/ui'
 
@@ -54,6 +54,8 @@ export function VideoScene({
   activeTaskId,
   continuous,
   onContinuousChange,
+  policy = 'video_only',
+  onPolicyChange,
   autoMute,
   volume,
   rate,
@@ -75,6 +77,8 @@ export function VideoScene({
   activeTaskId: string | null
   continuous: boolean
   onContinuousChange?: (v: boolean) => void
+  policy?: PlayPolicy
+  onPolicyChange?: (p: PlayPolicy) => void
   autoMute: boolean
   volume: number
   rate: number
@@ -474,11 +478,29 @@ export function VideoScene({
                     {continuous ? '连播已开' : '单集播放'}
                   </button>
                 )}
+                {continuous && onPolicyChange && (
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{ fontSize: 10.5, padding: '2px 6px' }}
+                    onClick={() => onPolicyChange(policy === 'video_only' ? 'stop_on_non_video' : 'video_only')}
+                    title="点击切换连续播放策略"
+                  >
+                    {policy === 'stop_on_non_video' ? '非视频暂停' : '仅跳播视频'}
+                  </button>
+                )}
                 <span className="chip chip-tint">
                   {tasks.filter((t) => t.platformStatus === 'completed').length}/{tasks.length || '—'}
                 </span>
               </div>
             </div>
+            {continuous && (
+              <div style={{ marginTop: 8, fontSize: 10.5, color: 'var(--ch-text-2)', background: 'var(--ch-subtle)', padding: '5px 8px', borderRadius: 'var(--r-subtle)' }}>
+                {policy === 'video_only'
+                  ? '连播策略：仅播放视频（遇到文档/测验将自动跳过，跳过不代表平台完成）'
+                  : '连播策略：遇到非视频任务（文档/测验）安全暂停等待确认'}
+              </div>
+            )}
           </header>
 
           {tasks.length === 0 ? (
@@ -529,9 +551,13 @@ export function VideoScene({
             >
               {tasks.map((t) => {
                 const active = t.id === activeTaskId
+                const isVideo = t.taskType === 'video'
                 const isDoc = t.taskType === 'doc'
                 const isQuiz = t.taskType === 'quiz'
+                const isMixed = t.taskType === 'mixed'
+                const isRead = t.taskType === 'read'
                 const isOther = t.taskType === 'other'
+                const isUnknown = !t.taskType || t.taskType === 'unknown'
 
                 return (
                   <li key={t.id}>
@@ -555,8 +581,14 @@ export function VideoScene({
                           <FileText size={16} style={{ color: 'var(--ch-primary)', flexShrink: 0 }} />
                         ) : isQuiz ? (
                           <HelpCircle size={16} style={{ color: 'var(--ch-warning)', flexShrink: 0 }} />
+                        ) : isMixed ? (
+                          <Layers size={16} style={{ color: 'var(--ch-primary)', flexShrink: 0 }} />
+                        ) : isRead ? (
+                          <FileText size={16} style={{ color: 'var(--ch-text-3)', flexShrink: 0 }} />
                         ) : isOther ? (
                           <Layers size={16} style={{ color: 'var(--ch-text-3)', flexShrink: 0 }} />
+                        ) : isUnknown ? (
+                          <HelpCircle size={16} style={{ color: 'var(--ch-text-3)', opacity: 0.6, flexShrink: 0 }} />
                         ) : active ? (
                           <Play size={16} style={{ flexShrink: 0, fill: 'currentColor' }} />
                         ) : (
@@ -581,17 +613,20 @@ export function VideoScene({
                       <span style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
                         <span
                           className={`chip ${
-                            isDoc
-                              ? 'chip-tint'
-                              : isQuiz
-                                ? 'chip-warning'
-                                : isOther
-                                  ? 'chip-neutral'
-                                  : 'chip-accent'
+                            isVideo
+                              ? 'chip-accent'
+                              : isDoc
+                                ? 'chip-tint'
+                                : isQuiz
+                                  ? 'chip-warning'
+                                  : isMixed
+                                    ? 'chip-tint'
+                                    : 'chip-neutral'
                           }`}
                           style={{ fontSize: 9.5, padding: '1px 5px', borderRadius: 4 }}
+                          title={isUnknown ? '任务类型待确认（进入页面后由组件探测器实测）' : undefined}
                         >
-                          {isDoc ? '文档' : isQuiz ? '测验' : isOther ? '其他' : '视频'}
+                          {isVideo ? '视频' : isDoc ? '文档' : isQuiz ? '测验' : isMixed ? '混合' : isRead ? '阅读' : isUnknown ? '待确认' : '其他'}
                         </span>
                         {t.durationSeconds ? (
                           <span style={{ fontSize: 10.5, opacity: 0.75 }}>

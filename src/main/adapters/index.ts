@@ -16,11 +16,12 @@
  * 因此本次交付中所有平台适配器一律标记 unverified —— 这是事实，不是缺陷。
  */
 
-import type { PlatformId, CapabilityState, SignInEvent, ChapterNode } from '@shared/types'
+import type { PlatformId, CapabilityState, SignInEvent, ChapterNode, ClassroomActivityItem } from '@shared/types'
 import {
   detectChaoxingAuth,
   fetchChaoxingCourses,
   fetchChaoxingSignIns,
+  fetchChaoxingActivities,
   fetchChaoxingChapters,
   type SessionLike
 } from './chaoxing'
@@ -63,6 +64,12 @@ export interface PlatformAdapter {
   listTodaySignIns?(ses?: SessionLike): Promise<{
     state: string
     events: SignInEvent[]
+    fetchedAt: string
+    reason: string | null
+  }>
+  listActivities?(ses?: SessionLike): Promise<{
+    state: string
+    activities: ClassroomActivityItem[]
     fetchedAt: string
     reason: string | null
   }>
@@ -140,6 +147,23 @@ export class ChaoxingAdapter implements PlatformAdapter {
       }
     }
     return fetchChaoxingSignIns(ses)
+  }
+
+  async listActivities(ses?: SessionLike): Promise<{
+    state: string
+    activities: ClassroomActivityItem[]
+    fetchedAt: string
+    reason: string | null
+  }> {
+    if (!ses) {
+      return {
+        state: 'unauthenticated',
+        activities: [],
+        fetchedAt: new Date().toISOString(),
+        reason: '缺少会话上下文'
+      }
+    }
+    return fetchChaoxingActivities(ses)
   }
 
   async stop(): Promise<void> {
@@ -249,6 +273,123 @@ export const ADAPTERS: Record<PlatformId, PlatformAdapter> = {
     },
     async detectAuth() {
       return { state: 'authenticated' as const, evidence: 'local-fixture' }
+    },
+    async listActivities() {
+      return {
+        state: 'supported',
+        activities: [
+          {
+            id: 'tb-act-signin-normal',
+            platformId: 'testbed' as const,
+            courseId: 'test-course-01',
+            courseName: '人工智能导论（测试课程）',
+            classId: 'sec-01',
+            category: 'sign_in' as const,
+            title: '第 3 周随堂签到',
+            status: 'open' as const,
+            startAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+            endAt: new Date(Date.now() + 50 * 60 * 1000).toISOString(),
+            sourceUrl: 'http://127.0.0.1:40123/classroom-test.html',
+            fetchedAt: new Date().toISOString(),
+            locationRequired: false,
+            locationText: null,
+            signInKind: 'normal' as const,
+            confidence: 'high' as const
+          },
+          {
+            id: 'tb-act-signin-location',
+            platformId: 'testbed' as const,
+            courseId: 'test-course-01',
+            courseName: '人工智能导论（测试课程）',
+            classId: 'sec-01',
+            category: 'sign_in' as const,
+            title: '实验大楼现场定位签到',
+            status: 'open' as const,
+            startAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+            endAt: new Date(Date.now() + 25 * 60 * 1000).toISOString(),
+            sourceUrl: 'http://127.0.0.1:40123/geo-test.html',
+            fetchedAt: new Date().toISOString(),
+            locationRequired: true,
+            locationText: '北京市天安门（39.9042, 116.4074）半径500m',
+            signInKind: 'location' as const,
+            confidence: 'high' as const
+          },
+          {
+            id: 'tb-act-quiz-01',
+            platformId: 'testbed' as const,
+            courseId: 'test-course-01',
+            courseName: '人工智能导论（测试课程）',
+            classId: 'sec-01',
+            category: 'quiz' as const,
+            title: '随堂互动小测：神经网络与损失函数',
+            status: 'open' as const,
+            startAt: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
+            endAt: new Date(Date.now() + 45 * 60 * 1000).toISOString(),
+            sourceUrl: 'http://127.0.0.1:40123/classroom-test.html',
+            fetchedAt: new Date().toISOString(),
+            locationRequired: false,
+            locationText: null,
+            signInKind: 'unknown' as const,
+            confidence: 'high' as const
+          },
+          {
+            id: 'tb-act-survey-01',
+            platformId: 'testbed' as const,
+            courseId: 'test-course-02',
+            courseName: '计算机网络体系结构',
+            classId: 'sec-02',
+            category: 'questionnaire' as const,
+            title: '期中教学反馈与课程难度调研',
+            status: 'open' as const,
+            startAt: new Date(Date.now() - 3600 * 1000).toISOString(),
+            endAt: new Date(Date.now() + 86400 * 1000).toISOString(),
+            sourceUrl: 'http://127.0.0.1:40123/classroom-test.html',
+            fetchedAt: new Date().toISOString(),
+            locationRequired: false,
+            locationText: null,
+            signInKind: 'unknown' as const,
+            confidence: 'high' as const
+          },
+          {
+            id: 'tb-act-notice-01',
+            platformId: 'testbed' as const,
+            courseId: 'test-course-02',
+            courseName: '计算机网络体系结构',
+            classId: 'sec-02',
+            category: 'notice' as const,
+            title: '关于下周四实验机房调整的紧急通知',
+            status: 'open' as const,
+            startAt: new Date(Date.now() - 7200 * 1000).toISOString(),
+            endAt: null,
+            sourceUrl: 'http://127.0.0.1:40123/classroom-test.html',
+            fetchedAt: new Date().toISOString(),
+            locationRequired: false,
+            locationText: null,
+            signInKind: 'unknown' as const,
+            confidence: 'high' as const
+          },
+          {
+            id: 'tb-act-signin-closed',
+            platformId: 'testbed' as const,
+            courseId: 'test-course-01',
+            courseName: '人工智能导论（测试课程）',
+            classId: 'sec-01',
+            category: 'sign_in' as const,
+            title: '第 2 周课前签到（已结束）',
+            status: 'closed' as const,
+            startAt: new Date(Date.now() - 7 * 86400 * 1000).toISOString(),
+            endAt: new Date(Date.now() - 7 * 86400 * 1000 + 1800 * 1000).toISOString(),
+            sourceUrl: 'http://127.0.0.1:40123/classroom-test.html',
+            fetchedAt: new Date().toISOString(),
+            locationRequired: false,
+            locationText: null,
+            signInKind: 'normal' as const,
+            confidence: 'high' as const
+          }
+        ],
+        fetchedAt: new Date().toISOString(),
+        reason: '本地 fixture 课堂活动数据集'
+      }
     },
     async stop() {
       /* noop */

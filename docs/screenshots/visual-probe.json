@@ -31,89 +31,89 @@
     },
     "drawerPresent": true,
     "platformCount": 4,
-    "sceneCount": 6
+    "sceneCount": 7
   },
   "shots": [
     {
       "id": "dashboard",
-      "bytes": 356704,
+      "bytes": 1132460,
       "size": {
-        "width": 2854,
+        "width": 2774,
         "height": 1730
       }
     },
     {
       "id": "video",
-      "bytes": 356699,
+      "bytes": 413050,
       "size": {
-        "width": 2854,
+        "width": 2774,
         "height": 1730
       }
     },
     {
       "id": "quiz",
-      "bytes": 318671,
+      "bytes": 342358,
       "size": {
-        "width": 2854,
+        "width": 2774,
         "height": 1730
       }
     },
     {
       "id": "signin",
-      "bytes": 379570,
+      "bytes": 445583,
       "size": {
-        "width": 2854,
+        "width": 2774,
         "height": 1730
       }
     },
     {
       "id": "geo",
-      "bytes": 404208,
+      "bytes": 1256340,
       "size": {
-        "width": 2854,
+        "width": 2774,
         "height": 1730
       }
     },
     {
       "id": "ai",
-      "bytes": 327561,
+      "bytes": 347831,
       "size": {
-        "width": 2854,
+        "width": 2774,
         "height": 1730
       }
     },
     {
       "id": "browser",
-      "bytes": 254503,
+      "bytes": 276867,
       "size": {
-        "width": 2854,
+        "width": 2774,
         "height": 1730
       }
     },
     {
       "id": "settings",
-      "bytes": 335815,
+      "bytes": 356366,
       "size": {
-        "width": 2854,
+        "width": 2774,
         "height": 1730
       }
     },
     {
       "id": "settings-dark",
-      "bytes": 338774,
+      "bytes": 361602,
       "size": {
-        "width": 2854,
+        "width": 2774,
         "height": 1730
       }
     },
     {
       "id": "settings-nodrawer",
-      "bytes": 210315,
+      "bytes": 215402,
       "size": {
-        "width": 2854,
+        "width": 2774,
         "height": 1730
       }
     }
   ],
-  "capturedAt": "2026-10-15T04:38:51.457Z"
+  "capturedAt": "2026-10-16T06:41:00.819Z"
 }
