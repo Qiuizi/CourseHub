@@ -17,6 +17,7 @@ import { _electron as electron } from 'playwright'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
 import fs from 'node:fs/promises'
+import os from 'node:os'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(__dirname, '..', '..')
@@ -62,8 +63,9 @@ async function main() {
   const env = { ...process.env }
   delete env.ELECTRON_RUN_AS_NODE
 
+  const tmpUserData = path.join(os.tmpdir(), `coursehub-e2e-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`)
   const app = await electron.launch({
-    args: [projectRoot],
+    args: [projectRoot, `--user-data-dir=${tmpUserData}`],
     env,
     timeout: 60_000
   })

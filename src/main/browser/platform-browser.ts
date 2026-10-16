@@ -43,8 +43,10 @@ export const PLATFORM_CONFIGS: readonly PlatformConfig[] = [
       'https://mooc1.chaoxing.com',
       'https://mooc1-1.chaoxing.com',
       'https://mooc1-2.chaoxing.com',
+      'https://mooc2-ans.chaoxing.com',
       'https://study-api.chaoxing.com',
-      'https://ananas.chaoxing.com'
+      'https://ananas.chaoxing.com',
+      'https://cldisk.com'
     ],
     // 关键优化：已登录用户直达工作台；未登录时超星官方自动 302 重定向到 passport2 扫码登录页
     homeUrl: 'https://i.chaoxing.com'

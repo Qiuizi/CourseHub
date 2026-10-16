@@ -167,7 +167,7 @@ export async function detectYuketangAuth(ses: SessionLike): Promise<{
         c.name.toLowerCase().includes(k.toLowerCase())
       )
     )
-    if (!hasAuthCookie && all.length === 0) {
+    if (!hasAuthCookie) {
       return { state: 'unauthenticated', evidence: '未在内置浏览器中检测到雨课堂登录 Cookie' }
     }
 

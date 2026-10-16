@@ -85,6 +85,7 @@ export function VideoScene({
 }): ReactNode {
   const pct = observedProgressPercent(observation)
   const isPlaying = observation?.playerState === 'playing'
+  const currentTask = tasks.find((t) => t.id === activeTaskId)
 
   return (
     <div style={{ maxWidth: 1120, margin: '0 auto' }}>
@@ -296,7 +297,28 @@ export function VideoScene({
                 },
                 {
                   k: '平台任务状态',
-                  v: <CapChip state="unverified" reason="平台接口未在真实账号验证，故不显示任何完成状态" />
+                  v: currentTask ? (
+                    <span
+                      data-testid="platform-task-status"
+                      className={`chip ${
+                        currentTask.platformStatus === 'completed'
+                          ? 'chip-emerald'
+                          : currentTask.platformStatus === 'in_progress'
+                            ? 'chip-tint'
+                            : 'chip-neutral'
+                      }`}
+                    >
+                      {currentTask.platformStatus === 'completed'
+                        ? '已完成'
+                        : currentTask.platformStatus === 'in_progress'
+                          ? '进行中'
+                          : currentTask.platformStatus === 'not_started'
+                            ? '未开始'
+                            : '待验证'}
+                    </span>
+                  ) : (
+                    <CapChip state="unverified" reason="平台接口未在真实账号验证，故不显示任何完成状态" />
+                  )
                 },
                 {
                   k: '观测时间',

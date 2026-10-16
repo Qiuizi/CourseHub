@@ -371,6 +371,9 @@ export function parseMooc2ChapterListResponse(
   if (html.includes('passport2.chaoxing.com/login') || html.includes('请重新登录') || html.includes('未登录')) {
     return { ok: false, chapters: [], error: 'AUTH_EXPIRED: 学习通会话已过期，需要重新登录' }
   }
+  if (html.includes('antispiderShowVerify') || html.includes('【9010】操作异常')) {
+    return { ok: false, chapters: [], error: 'ANTISPIDER_VERIFY: 超星触发防爬验证码，请在内置浏览器中完成一次验证' }
+  }
 
   const encMatch =
     html.match(/var\s+enc\s*=\s*["']([^"']+)["']/i) ||
@@ -378,7 +381,7 @@ export function parseMooc2ChapterListResponse(
     html.match(/value=["']([^"']+)["'][^>]*id=["']enc["']/i)
   const enc = encMatch ? encMatch[1] : ''
 
-  if (html.includes('No chapter content available') || html.includes('nodata')) {
+  if (html.includes('No chapter content available') || /<(?:div|p)[^>]*class=["'][^"']*nodata/i.test(html)) {
     return { ok: true, chapters: [], enc }
   }
 
@@ -460,12 +463,19 @@ export function parseMooc2ChapterListResponse(
       }
 
       let status: 'completed' | 'in_progress' | 'not_started' | 'unknown' = 'not_started'
-      if (li.includes('icon_yiwanc') || li.includes('Completed') || li.includes('已完成')) {
+      if (
+        li.includes('icon_yiwanc') ||
+        li.includes('icon_Completed') ||
+        li.includes('Completed') ||
+        li.includes('已完成')
+      ) {
         status = 'completed'
-      } else if (li.includes('icon-bukaifang') || li.includes('未开放')) {
+      } else if (li.includes('icon-bukaifang') || li.includes('未开放') || li.includes('Closed')) {
         status = 'not_started'
-      } else if (li.includes('icon-jindu') || li.includes('in_progress')) {
+      } else if (li.includes('icon-jindu') || li.includes('in_progress') || li.includes('catalog_points_bing')) {
         status = 'in_progress'
+      } else if (li.includes('catalog_points_yi') || li.includes('catalog_points_no')) {
+        status = 'not_started'
       }
 
       let taskType: 'video' | 'doc' | 'quiz' | 'unknown' = 'video'
@@ -601,7 +611,7 @@ export async function detectChaoxingAuth(ses: SessionLike): Promise<{
         c.name.toLowerCase().includes(k.toLowerCase())
       )
     )
-    if (!hasAuthCookie && all.length === 0) {
+    if (!hasAuthCookie) {
       return { state: 'unauthenticated', evidence: '未在内置浏览器中检测到学习通登录 Cookie' }
     }
 

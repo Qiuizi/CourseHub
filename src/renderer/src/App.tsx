@@ -488,7 +488,6 @@ export default function App(): JSX.Element {
                 void api.browser.navigate(activeId, t.sourceUrl)
               }
               void startObserving(id)
-              void api.video.command(activeId, 'play', undefined, id)
               pushActivity(`切换到任务 ${t?.title ?? id}`)
             }}
             onCommand={(a, v) => {

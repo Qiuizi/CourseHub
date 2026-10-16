@@ -326,6 +326,36 @@ describe('ChaoxingAdapter 解析与请求构造', () => {
     expect(res.chapters).toHaveLength(0)
   })
 
+  it('parseMooc2ChapterListResponse 遇到样式表中包含 .nodata 类名但不为空时能正常解析章节', () => {
+    const htmlWithStyle = `
+      <style>.nodata { text-align: center; }</style>
+      <input type="hidden" id="enc" value="abc123enc" />
+      <div class="chapter_unit">
+        <div class="catalog_title chapter_Thats_bnt">
+          <a class="clicktitle" href="javascript:void(0);">第一单元</a>
+        </div>
+        <div class="catalog_level">
+          <ul>
+            <li id="cur999" onclick="toOld('999', '999')">
+              <a class="clicktitle" href="javascript:void(0);">1.1 视频导学</a>
+            </li>
+          </ul>
+        </div>
+      </div>
+    `
+    const res = parseMooc2ChapterListResponse(htmlWithStyle, '258206267', '134433014')
+    expect(res.ok).toBe(true)
+    expect(res.chapters.length).toBeGreaterThan(0)
+    expect(res.enc).toBe('abc123enc')
+  })
+
+  it('parseMooc2ChapterListResponse 遇到防爬验证码页面时报告 ANTISPIDER_VERIFY', () => {
+    const verifyHtml = '<div>【9010】操作异常，请输入图片中的验证码 <form action="/html/processVerify.ac"></form></div>'
+    const res = parseMooc2ChapterListResponse(verifyHtml, '255556164', '140001')
+    expect(res.ok).toBe(false)
+    expect(res.error).toContain('ANTISPIDER_VERIFY')
+  })
+
   it('parseMooc2ChapterListResponse 遇到会话过期提示时报告 AUTH_EXPIRED', () => {
     const expiredHtml = '<div><script>location.href="https://passport2.chaoxing.com/login"</script></div>'
     const res = parseMooc2ChapterListResponse(expiredHtml, '255556164', '140001')
