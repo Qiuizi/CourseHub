@@ -227,3 +227,74 @@ describe('buildTestPlan 操作数上限', () => {
     expect(plan.kind).toBe('preview_fill')
   })
 })
+
+describe('超星学习通题型识别与归一化', () => {
+  it('单选、多选、判断、简答题型精准归一化', () => {
+    const singleQ = normalizeQuestion(
+      {
+        id: 'cx-q1',
+        control: 'radio',
+        text: '下列关于反向传播算法的描述中，最准确的是？',
+        options: [
+          { key: 'A', label: '利用链式法则计算梯度' },
+          { key: 'B', label: '无需前向传播' }
+        ]
+      },
+      'chaoxing',
+      'https://mooc1.chaoxing.com/exam/test',
+      NOW
+    )
+    expect(singleQ.questionType).toBe('single')
+    expect(singleQ.platformId).toBe('chaoxing')
+    expect(singleQ.options).toHaveLength(2)
+
+    const multiQ = normalizeQuestion(
+      {
+        id: 'cx-q2',
+        control: 'checkbox',
+        text: '以下哪些技术可有效缓解过拟合？',
+        multipleAllowed: true,
+        options: [
+          { key: 'A', label: 'Dropout 随机失活' },
+          { key: 'B', label: 'L2 正则化' },
+          { key: 'C', label: '数据增强' }
+        ]
+      },
+      'chaoxing',
+      'https://mooc1.chaoxing.com/exam/test',
+      NOW
+    )
+    expect(multiQ.questionType).toBe('multiple')
+    expect(multiQ.options).toHaveLength(3)
+
+    const judgeQ = normalizeQuestion(
+      {
+        id: 'cx-q3',
+        control: 'boolean',
+        text: '判断：卷积神经网络具有局部连接特性。',
+        options: [
+          { key: 'A', label: '正确' },
+          { key: 'B', label: '错误' }
+        ]
+      },
+      'chaoxing',
+      'https://mooc1.chaoxing.com/exam/test',
+      NOW
+    )
+    expect(judgeQ.questionType).toBe('judgement')
+
+    const essayQ = normalizeQuestion(
+      {
+        id: 'cx-q4',
+        control: 'text',
+        text: '简述 Transformer 架构中自注意力机制的核心公式。',
+        options: []
+      },
+      'chaoxing',
+      'https://mooc1.chaoxing.com/exam/test',
+      NOW
+    )
+    expect(essayQ.questionType).toBe('text')
+    expect(essayQ.options).toEqual([])
+  })
+})

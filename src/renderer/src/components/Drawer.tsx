@@ -1,21 +1,50 @@
+import { useState } from 'react'
 import type { ReactNode } from 'react'
-import { Zap, MapPin, Sparkles, Activity } from 'lucide-react'
-import { Card, Seg, Switch, Empty, CapChip } from '../components/ui'
+import {
+  Zap,
+  MapPin,
+  Sparkles,
+  Activity,
+  Send,
+  Square,
+  Camera,
+  Copy,
+  Check,
+  RefreshCw,
+  Trash2,
+  BookOpen
+} from 'lucide-react'
+import { Card, Seg, Switch, Empty, CapChip, Notice } from '../components/ui'
 import { observedProgressPercent } from '@shared/video'
-import type { PlaybackObservation } from '@shared/types'
+import type { PlaybackObservation, AIModelInfo, AIResult } from '@shared/types'
+import { modelSupportsImage } from '@shared/deepseek'
 
 /** 提交模式。confirm 之外不提供无人值守自动提交。 */
 export type SubmitMode = 'confirm' | 'manual'
 
-/**
- * 右侧抽屉。
- *
- * 视觉结构对齐原型（托管卡片 / 听课设置 / AI与位置守护 / 今日动态），
- * 但每个控件都接真实状态：
- * - 自动化执行需遵循受控交互与用户确认原则，保障数据准确性；
- * - 没有编造统计；
- * - 「今日动态」读主进程脱敏日志，无数据即空态。
- */
+export interface DrawerAiProps {
+  models: AIModelInfo[]
+  modelError: string | null
+  selectedModelId: string
+  onSelectModelId: (id: string) => void
+  busy: boolean
+  promptText: string
+  onChangePromptText: (text: string) => void
+  imagePreview: string | null
+  onClearImage: () => void
+  onPickImageFile: (file: File) => void
+  onExtractFromPage: () => void
+  onCaptureFromPage: () => void
+  onSubmit: () => void
+  onCancel: () => void
+  onRegenerate: () => void
+  onClearAll: () => void
+  streamingText: string
+  result: AIResult | null
+  error: string | null
+  courseName?: string | null
+}
+
 export function Drawer({
   observation,
   continuous,
@@ -27,7 +56,10 @@ export function Drawer({
   testLocation,
   onChangeTestLocation,
   activity,
-  drawerOpen
+  drawerOpen,
+  drawerTab = 'ai',
+  onDrawerTabChange,
+  aiProps
 }: {
   observation: PlaybackObservation | null
   continuous: boolean
@@ -40,13 +72,297 @@ export function Drawer({
   onChangeTestLocation: () => void
   activity: { id: string; time: string; title: string }[]
   drawerOpen: boolean
+  drawerTab?: 'ai' | 'controls'
+  onDrawerTabChange?: (tab: 'ai' | 'controls') => void
+  aiProps?: DrawerAiProps
 }): ReactNode {
   if (!drawerOpen) return null
 
+  const [copied, setCopied] = useState(false)
   const pct = observedProgressPercent(observation)
+  const activeTab = drawerTab ?? 'ai'
+
+  const handleCopy = (text: string) => {
+    void navigator.clipboard?.writeText(text).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1800)
+    })
+  }
 
   return (
     <aside className="drawer" data-testid="drawer" aria-label="智能助手侧边栏">
+      {/* 选项卡切换：AI 助教 vs 播放与设置 */}
+      <div style={{ marginBottom: 12 }}>
+        <Seg
+          value={activeTab}
+          onChange={(t) => onDrawerTabChange?.(t as 'ai' | 'controls')}
+          options={[
+            { id: 'ai', label: 'AI 课堂助教' },
+            { id: 'controls', label: '播放与设置' }
+          ]}
+        />
+      </div>
+
+      {activeTab === 'ai' && aiProps && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {/* 1. 模型状态卡片 */}
+          <Card>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Sparkles size={15} style={{ color: 'var(--ch-accent)' }} />
+                <span style={{ fontSize: 12, fontWeight: 600 }}>DeepSeek 助手</span>
+              </div>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                {aiProps.modelError ? (
+                  <span className="chip chip-neutral" style={{ fontSize: 10 }}>离线参考</span>
+                ) : (
+                  <span className="chip chip-emerald" style={{ fontSize: 10 }}>在线已验证</span>
+                )}
+                {aiProps.courseName && (
+                  <span className="chip chip-tint" style={{ fontSize: 10 }} title={`当前关联课程：${aiProps.courseName}`}>
+                    <BookOpen size={10} style={{ display: 'inline', marginRight: 3 }} />
+                    {aiProps.courseName.slice(0, 8)}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* 模型选择 */}
+            <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 11, color: 'var(--ch-text-2)', flexShrink: 0 }}>模型：</span>
+              <select
+                className="field"
+                style={{ padding: '2px 8px', fontSize: 11.5, height: 28, flex: 1 }}
+                value={aiProps.selectedModelId}
+                onChange={(e) => aiProps.onSelectModelId(e.target.value)}
+                data-testid="drawer-model-select"
+              >
+                {aiProps.models.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.displayName ? `${m.displayName} (${m.id})` : m.id} {modelSupportsImage(m) ? '📸' : '📝'}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* 一键快捷操作 */}
+            <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{ fontSize: 11.5, padding: '6px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}
+                onClick={aiProps.onExtractFromPage}
+                disabled={aiProps.busy}
+                data-testid="drawer-extract-btn"
+                title="从当前课堂网页中提取可见题目与选项"
+              >
+                <Sparkles size={13} />
+                提取当前题
+              </button>
+              <button
+                type="button"
+                className="btn"
+                style={{ fontSize: 11.5, padding: '6px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}
+                onClick={aiProps.onCaptureFromPage}
+                disabled={aiProps.busy}
+                data-testid="drawer-capture-btn"
+                title="截取当前课堂或视频画面作为待分析图像"
+              >
+                <Camera size={13} />
+                截屏问 AI
+              </button>
+            </div>
+          </Card>
+
+          {/* 2. 待分析题目与图片预览区 */}
+          <Card>
+            {aiProps.imagePreview && (
+              <div
+                style={{
+                  marginBottom: 10,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  padding: 8,
+                  borderRadius: 'var(--r-block)',
+                  background: 'var(--ch-subtle)',
+                  border: '1px solid var(--ch-border)'
+                }}
+              >
+                <img
+                  src={aiProps.imagePreview}
+                  alt="待分析画面预览"
+                  style={{ width: 68, height: 48, objectFit: 'cover', borderRadius: 6 }}
+                  data-testid="drawer-image-preview"
+                />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 11, fontWeight: 500 }}>已附带截图</div>
+                  <div style={{ fontSize: 10, color: 'var(--ch-text-2)' }}>发送前可编辑右下方问题</div>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  style={{ padding: '4px 6px', fontSize: 11 }}
+                  onClick={aiProps.onClearImage}
+                  disabled={aiProps.busy}
+                >
+                  移除
+                </button>
+              </div>
+            )}
+
+            <textarea
+              className="field"
+              rows={3}
+              placeholder="输入题目、选项或疑问，支持 Ctrl+V 粘贴截图，Enter 发送"
+              value={aiProps.promptText}
+              onChange={(e) => aiProps.onChangePromptText(e.target.value)}
+              onPaste={(e) => {
+                const items = e.clipboardData?.items
+                if (!items) return
+                for (let i = 0; i < items.length; i++) {
+                  const item = items[i]
+                  if (item?.type.startsWith('image/')) {
+                    const file = item.getAsFile()
+                    if (file) {
+                      e.preventDefault()
+                      aiProps.onPickImageFile(file)
+                      break
+                    }
+                  }
+                }
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  if (!aiProps.busy && (aiProps.promptText.trim() || aiProps.imagePreview)) {
+                    aiProps.onSubmit()
+                  }
+                }
+              }}
+              disabled={aiProps.busy}
+              data-testid="drawer-ai-input"
+              style={{ resize: 'none', fontSize: 12 }}
+            />
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 }}>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                style={{ fontSize: 11, padding: '4px 8px' }}
+                onClick={aiProps.onClearAll}
+                disabled={aiProps.busy || (!aiProps.promptText && !aiProps.imagePreview && !aiProps.result)}
+              >
+                <Trash2 size={12} />
+                清空
+              </button>
+
+              {aiProps.busy ? (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  style={{ fontSize: 11.5, padding: '5px 12px' }}
+                  onClick={aiProps.onCancel}
+                  data-testid="drawer-ai-cancel"
+                >
+                  <Square size={13} />
+                  停止
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  style={{ fontSize: 11.5, padding: '5px 14px' }}
+                  onClick={aiProps.onSubmit}
+                  disabled={!aiProps.promptText.trim() && !aiProps.imagePreview}
+                  data-testid="drawer-ai-send"
+                >
+                  <Send size={13} />
+                  发送分析
+                </button>
+              )}
+            </div>
+          </Card>
+
+          {/* 3. 分析结果卡片 */}
+          {(aiProps.busy || aiProps.streamingText || aiProps.result || aiProps.error) && (
+            <Card title="分析结果与推导">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
+                <span
+                  className={`chip ${aiProps.result?.isMock ? 'chip-neutral' : 'chip-emerald'}`}
+                  style={{ fontSize: 10 }}
+                  data-testid="drawer-ai-badge"
+                >
+                  {aiProps.result?.isMock ? 'Mock 模拟' : 'DeepSeek 实时分析'}
+                </span>
+                {aiProps.result?.usage && (
+                  <span className="chip" style={{ fontSize: 9.5 }}>
+                    Token: {aiProps.result.usage.promptTokens ?? 0} in / {aiProps.result.usage.completionTokens ?? 0} out
+                  </span>
+                )}
+              </div>
+
+              {aiProps.error && (
+                <div style={{ marginBottom: 8 }}>
+                  <Notice tone="error">{aiProps.error}</Notice>
+                </div>
+              )}
+
+              <div
+                style={{
+                  fontSize: 12,
+                  lineHeight: 1.7,
+                  whiteSpace: 'pre-wrap',
+                  background: 'var(--ch-subtle)',
+                  padding: 10,
+                  borderRadius: 'var(--r-block)',
+                  border: '1px solid var(--ch-border)',
+                  maxHeight: 280,
+                  overflowY: 'auto'
+                }}
+                data-testid="drawer-ai-content"
+              >
+                {aiProps.streamingText || aiProps.result?.explanation || '等待响应中...'}
+                {aiProps.busy && <span className="pulse" style={{ marginLeft: 3 }}>▍</span>}
+              </div>
+
+              {aiProps.result?.suggestedAnswer && (
+                <div style={{ marginTop: 8, fontSize: 12, fontWeight: 500, color: 'var(--ch-accent)' }}>
+                  建议答案：{aiProps.result.suggestedAnswer}
+                </div>
+              )}
+
+              {!aiProps.busy && (aiProps.result || aiProps.streamingText) && (
+                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    style={{ fontSize: 11 }}
+                    onClick={() => handleCopy(aiProps.result?.explanation || aiProps.streamingText)}
+                    data-testid="drawer-copy-btn"
+                  >
+                    {copied ? <Check size={12} /> : <Copy size={12} />}
+                    {copied ? '已复制' : '复制解析'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    style={{ fontSize: 11 }}
+                    onClick={aiProps.onRegenerate}
+                    data-testid="drawer-regen-btn"
+                  >
+                    <RefreshCw size={12} />
+                    重新生成
+                  </button>
+                </div>
+              )}
+            </Card>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'controls' && (
+        <>
       {/* 1. 播放观测（原型位：一键全自动托管） */}
       <Card>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
@@ -219,6 +535,8 @@ export function Drawer({
           <CapChip state="supported" compact />
         </div>
       </Card>
+        </>
+      )}
     </aside>
   )
 }

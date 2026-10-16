@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>超星学习通 - 章节测验与课堂互动</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; color: #1e293b; padding: 24px; margin: 0; }
+    .header { margin-bottom: 20px; border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    .header h1 { font-size: 18px; margin: 0; color: #0f172a; }
+    .TiMu { background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 18px; margin-bottom: 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+    .Zy_TItle { font-size: 15px; font-weight: 600; margin-bottom: 14px; line-height: 1.6; }
+    .Zy_TItle i.fl { font-style: normal; color: #2563eb; margin-right: 6px; }
+    .Zy_ulTop { list-style: none; padding: 0; margin: 0; }
+    .Zy_ulTop li { padding: 8px 12px; margin-bottom: 6px; border-radius: 6px; background: #f1f5f9; cursor: pointer; transition: background 0.15s; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+    .Zy_ulTop li:hover { background: #e2e8f0; }
+    textarea.blank-input { width: 100%; min-height: 80px; padding: 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; box-sizing: border-box; }
+    .q-img { max-width: 320px; border: 1px solid #cbd5e1; border-radius: 6px; margin: 10px 0; display: block; }
+    iframe.nested-quiz { width: 100%; height: 180px; border: 1px dashed #94a3b8; border-radius: 6px; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>高等数学与人工智能基础 - 章节测验（超星学习通仿真平台）</h1>
+  </div>
+
+  <!-- 1. 单选题 -->
+  <div class="TiMu" id="cx-q1">
+    <div class="Zy_TItle clearfix">
+      <i class="fl">1.【单选题】</i>
+      <div class="clearfix">下列关于反向传播算法（Backpropagation）的描述中，最准确的是？</div>
+    </div>
+    <ul class="Zy_ulTop">
+      <li><input type="radio" name="cx-r1" value="A"> A. 反向传播利用链式法则计算损失函数关于网络权重的梯度</li>
+      <li><input type="radio" name="cx-r1" value="B"> B. 反向传播是一种无需前向传播即可更新权重的独立优化方法</li>
+      <li><input type="radio" name="cx-r1" value="C"> C. 反向传播只能应用于二分类感知机模型</li>
+      <li><input type="radio" name="cx-r1" value="D"> D. 反向传播能彻底消除深度神经网络中的梯度消失现象</li>
+    </ul>
+  </div>
+
+  <!-- 2. 多选题 -->
+  <div class="TiMu" id="cx-q2">
+    <div class="Zy_TItle clearfix">
+      <i class="fl">2.【多选题】</i>
+      <div class="clearfix">以下哪些技术可有效缓解深度神经网络训练过程中的过拟合现象？</div>
+    </div>
+    <ul class="Zy_ulTop">
+      <li><input type="checkbox" name="cx-c2" value="A"> A. Dropout 随机失活</li>
+      <li><input type="checkbox" name="cx-c2" value="B"> B. L2 正则化（权重衰减）</li>
+      <li><input type="checkbox" name="cx-c2" value="C"> C. 数据增强（Data Augmentation）</li>
+      <li><input type="checkbox" name="cx-c2" value="D"> D. 提高模型参数量并减少训练样本</li>
+    </ul>
+  </div>
+
+  <!-- 3. 判断题 -->
+  <div class="TiMu" id="cx-q3">
+    <div class="Zy_TItle clearfix">
+      <i class="fl">3.【判断题】</i>
+      <div class="clearfix">卷积神经网络（CNN）中的卷积层具有局部连接和权值共享的特性。</div>
+    </div>
+    <ul class="Zy_ulTop">
+      <li><input type="radio" name="cx-r3" value="A"> 正确</li>
+      <li><input type="radio" name="cx-r3" value="B"> 错误</li>
+    </ul>
+  </div>
+
+  <!-- 4. 填空 / 简答题 -->
+  <div class="TiMu" id="cx-q4">
+    <div class="Zy_TItle clearfix">
+      <i class="fl">4.【简答题】</i>
+      <div class="clearfix">简述 Transformer 架构中自注意力机制（Self-Attention）的核心计算公式与意义。</div>
+    </div>
+    <textarea class="blank-input" placeholder="请输入简答内容..."></textarea>
+  </div>
+
+  <!-- 5. 跨 iframe 嵌入的小测题目 -->
+  <iframe class="nested-quiz" id="nested-frame" srcdoc='
+    <!doctype html>
+    <html>
+    <head><style>body{font-family:sans-serif;margin:10px;background:#f8fafc;font-size:14px;}</style></head>
+    <body>
+      <div class="TiMu" id="cx-iframe-q1">
+        <div class="Zy_TItle clearfix">
+          <i class="fl">5.【嵌套单选】</i>
+          <div>在学习通嵌套 iframe 中：Softmax 函数常用于多分类问题的哪个层？</div>
+        </div>
+        <ul class="Zy_ulTop" style="list-style:none;padding:0;">
+          <li><label><input type="radio" name="ifr" value="A"> A. 输出层</label></li>
+          <li><label><input type="radio" name="ifr" value="B"> B. 输入层</label></li>
+        </ul>
+      </div>
+    </body>
+    </html>
+  '></iframe>
+</body>
+</html>

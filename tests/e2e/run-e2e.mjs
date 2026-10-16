@@ -277,7 +277,12 @@ async function main() {
           longitude: 104.0657,
           accuracy: 35
         })
-        const overridden = await readGeo()
+        await new Promise((r) => setTimeout(r, 200))
+        let overridden = await readGeo()
+        if (overridden?.error) {
+          await new Promise((r) => setTimeout(r, 500))
+          overridden = await readGeo()
+        }
 
         // 清除覆盖
         await wc.debugger.sendCommand('Emulation.clearGeolocationOverride')
@@ -911,6 +916,77 @@ async function main() {
         deepseekTokenCheck?.totalProcessed === 1 &&
         deepseekTokenCheck?.results?.[0]?.explanation?.includes('[Mock 模拟分析]'),
       JSON.stringify(deepseekTokenCheck)
+    )
+
+    // 9.6 真实课堂 AI 助教端到端闭环（超星测验/多题型与跨 iframe 提取、视口截屏生成、右侧抽屉联动）
+    const classroomAiCheck = await win.evaluate(async () => {
+      // 0. 切换至平台浏览场景并激活测试台
+      const navBtn = document.querySelector('[data-scene="browser"]')
+      if (navBtn) navBtn.click()
+      await new Promise((r) => setTimeout(r, 400))
+
+      const testbedPill = document.querySelector('[data-platform="testbed"]')
+      if (testbedPill) testbedPill.click()
+      await new Promise((r) => setTimeout(r, 600))
+
+      // 1. 加载超星测验 Fixture
+      await window.coursehub.testbed.loadFixture('chaoxing-classroom-quiz.html')
+      await new Promise((r) => setTimeout(r, 600))
+
+      // 2. 提取题目（包含跨 iframe）
+      const qRes = await window.coursehub.question.extract('testbed')
+      const qs = qRes.ok ? qRes.data.questions : []
+      const hasSingle = qs.some((q) => q.questionType === 'single')
+      const hasMulti = qs.some((q) => q.questionType === 'multiple')
+      const hasJudge = qs.some((q) => q.questionType === 'judgement')
+      const hasText = qs.some((q) => q.questionType === 'text')
+      const hasIframeQuestion = qs.some((q) => q.id.includes('iframe') || q.extractedText?.includes('嵌套'))
+
+      // 3. 视口截图生成
+      const capRes = await window.coursehub.browser.captureView('testbed')
+      const validDataUrl = Boolean(
+        capRes.ok &&
+        typeof capRes.data?.dataUrl === 'string' &&
+        capRes.data.dataUrl.startsWith('data:image/png;base64,') &&
+        capRes.data.dataUrl.length > 500
+      )
+
+      // 4. UI 元素就绪检验
+      const hasDrawerInput = Boolean(document.querySelector('[data-testid="drawer-ai-input"]'))
+      const hasDrawerSend = Boolean(document.querySelector('[data-testid="drawer-ai-send"]'))
+      const hasExtractBtn = Boolean(document.querySelector('[data-testid="browser-ai-extract"]'))
+      const hasCaptureBtn = Boolean(document.querySelector('[data-testid="browser-ai-capture"]'))
+
+      return {
+        questionCount: qs.length,
+        hasSingle,
+        hasMulti,
+        hasJudge,
+        hasText,
+        hasIframeQuestion,
+        validDataUrl,
+        capResOk: capRes.ok,
+        hasDrawerInput,
+        hasDrawerSend,
+        hasExtractBtn,
+        hasCaptureBtn
+      }
+    })
+
+    record(
+      'v0.3.9-6：课堂 AI 集成闭环（超星多题型与跨 iframe 提取、视口截屏传输、抽屉交互元素全就绪）',
+      classroomAiCheck?.questionCount >= 5 &&
+        classroomAiCheck?.hasSingle &&
+        classroomAiCheck?.hasMulti &&
+        classroomAiCheck?.hasJudge &&
+        classroomAiCheck?.hasText &&
+        classroomAiCheck?.hasIframeQuestion &&
+        classroomAiCheck?.validDataUrl &&
+        classroomAiCheck?.hasDrawerInput &&
+        classroomAiCheck?.hasDrawerSend &&
+        classroomAiCheck?.hasExtractBtn &&
+        classroomAiCheck?.hasCaptureBtn,
+      JSON.stringify(classroomAiCheck)
     )
   } catch (e) {
     record('E2E 执行过程', false, e instanceof Error ? e.message : String(e))

@@ -10,46 +10,166 @@
  * 明确不提供：任意 JS 执行、跨站 fetch、Shell、文件系统、无限点击。
  */
 
-import type { ClassroomQuestion, QuestionOption, TestActionPlan } from '@shared/types'
-import { normalizeQuestion, mapAnswerToOptions, validatePlanAgainstQuestion } from '@shared/question'
+import type { ClassroomQuestion, PlatformId, TestActionPlan, QuestionOption } from '@shared/types'
+import { normalizeQuestion, validatePlanAgainstQuestion, mapAnswerToOptions } from '@shared/question'
 import type { RawQuestionDom } from '@shared/question'
 
-/** 注入脚本：只读取固定 data-* 契约，不做启发式猜测。 */
+/** 注入脚本：优先匹配测试台契约，其次穿透提取超星学习通等在线课堂题型。 */
 const EXTRACT_SCRIPT = `(() => {
+  // 1. 测试台契约节点（测试台 fixture 优先）
   const nodes = Array.from(document.querySelectorAll('[data-ch-question]'));
-  if (nodes.length === 0) return { questions: [] };
-  const questions = nodes.map((node) => {
-    const id = node.getAttribute('data-ch-question') || '';
-    // 题型由显式标记决定；无标记则 unknown，不靠选项数量猜
-    const control = node.getAttribute('data-ch-control') || 'none';
-    const textEl = node.querySelector('[data-ch-text]');
-    const optionEls = Array.from(node.querySelectorAll('[data-ch-option]'));
-    return {
-      id,
-      control,
-      text: textEl ? textEl.textContent : null,
-      options: optionEls.map((el) => ({
-        key: el.getAttribute('data-ch-option') || '',
-        label: el.textContent || ''
-      })),
-      multipleAllowed: control === 'checkbox'
-    };
-  });
+  if (nodes.length > 0) {
+    const questions = nodes.map((node) => {
+      const id = node.getAttribute('data-ch-question') || '';
+      const control = node.getAttribute('data-ch-control') || 'none';
+      const textEl = node.querySelector('[data-ch-text]');
+      const optionEls = Array.from(node.querySelectorAll('[data-ch-option]'));
+      return {
+        id,
+        control,
+        text: textEl ? textEl.textContent : null,
+        options: optionEls.map((el) => ({
+          key: el.getAttribute('data-ch-option') || '',
+          label: el.textContent || ''
+        })),
+        multipleAllowed: control === 'checkbox'
+      };
+    });
+    return { questions };
+  }
+
+  // 2. 超星学习通及主流在线教育作业/课堂练习 DOM 结构
+  let qNodes = Array.from(document.querySelectorAll(
+    '.TiMu, div[class*="TiMu"], .questionLi, .question-item, .subject-item, [class*="question_item"], [class*="subject_item"]'
+  ));
+  if (qNodes.length === 0) {
+    qNodes = Array.from(document.querySelectorAll('.Zy_TItle, .clearfix[class*="title"]'));
+  }
+
+  const questions = [];
+  const seenIds = new Set();
+
+  for (let idx = 0; idx < qNodes.length; idx++) {
+    const node = qNodes[idx];
+    // 仅当包含嵌套子题容器时跳过外层大题
+    if (node.querySelector('.TiMu, div[class*="TiMu"], .questionLi, .question-item')) continue;
+
+    const rawId = node.getAttribute('id') || node.getAttribute('data-id') || 'q-' + (idx + 1);
+    if (seenIds.has(rawId)) continue;
+    seenIds.add(rawId);
+
+    const titleEl = node.querySelector('.Zy_TItle, .clearfix, .title, .stem, h3, [class*="title"], [class*="stem"]') || node;
+    let stemText = '';
+    if (titleEl) {
+      const clone = titleEl.cloneNode(true);
+      const toRemove = clone.querySelectorAll('ul, ol, .Zy_ulTop, .stem_answer, [class*="answer"], [class*="option"], [class*="btn"]');
+      toRemove.forEach((el) => el.remove());
+      stemText = (clone.textContent || '').trim();
+    } else {
+      stemText = (node.textContent || '').slice(0, 200).trim();
+    }
+
+    const hasCheckbox = node.querySelectorAll('input[type="checkbox"]').length > 0;
+    const hasRadio = node.querySelectorAll('input[type="radio"]').length > 0;
+    const hasTextarea = node.querySelectorAll('textarea').length > 0;
+    const hasInputText = node.querySelectorAll('input[type="text"]').length > 0;
+
+    let control = 'none';
+    let multipleAllowed = false;
+    if (hasCheckbox || /【?多选(题)?】?/.test(stemText)) {
+      control = 'checkbox';
+      multipleAllowed = true;
+    } else if (/【?判断(题)?】?/.test(stemText) || (/(正确|错误|对|错)/.test(stemText) && !hasCheckbox && !hasTextarea)) {
+      control = 'boolean';
+    } else if (hasRadio || /【?单选(题)?】?/.test(stemText)) {
+      control = 'radio';
+    } else if (hasInputText || /【?填空(题)?】?/.test(stemText)) {
+      control = 'text';
+    } else if (hasTextarea || /【?(简答|问答|论述|主观)(题)?】?/.test(stemText)) {
+      control = 'text';
+    } else if (node.querySelectorAll('ul li, ol li').length > 0) {
+      control = 'radio';
+    }
+
+    const optNodes = Array.from(node.querySelectorAll(
+      'ul.Zy_ulTop li, ul.stem_answer li, .Zy_ulTop li, [class*="answer"] li, [class*="option"] li, ul li'
+    ));
+
+    const options = [];
+    if (optNodes.length > 0) {
+      optNodes.forEach((optEl, oIdx) => {
+        const text = (optEl.textContent || '').trim();
+        const m = text.match(/^([A-G]|[0-9]|对|错|正确|错误)[\\.、\\s\\:：](.+)$/);
+        let key = '';
+        let label = '';
+        if (m) {
+          key = m[1];
+          label = m[2].trim();
+        } else {
+          key = String.fromCharCode(65 + oIdx);
+          label = text;
+        }
+        if (label) {
+          options.push({ key, label });
+        }
+      });
+    }
+
+    if (control === 'boolean' && options.length === 0) {
+      options.push({ key: 'A', label: '正确（对）' });
+      options.push({ key: 'B', label: '错误（错）' });
+    }
+
+    if (stemText.length > 0) {
+      questions.push({
+        id: rawId,
+        control,
+        text: stemText,
+        options,
+        multipleAllowed
+      });
+    }
+  }
+
   return { questions };
 })()`
 
 export async function extractQuestions(
-  wc: Electron.WebContents
+  wc: Electron.WebContents,
+  platformId: PlatformId = 'testbed'
 ): Promise<{ questions: ClassroomQuestion[]; error: string | null }> {
   if (wc.isDestroyed()) return { questions: [], error: 'NOT_FOUND: 页面已销毁' }
   try {
-    const raw = (await wc.executeJavaScript(EXTRACT_SCRIPT, true)) as {
-      questions?: RawQuestionDom[]
+    const frames: Electron.WebFrameMain[] = []
+    const collectFrames = (frame: Electron.WebFrameMain) => {
+      frames.push(frame)
+      for (const child of frame.frames) collectFrames(child)
     }
+    collectFrames(wc.mainFrame)
+
+    const allRaw: RawQuestionDom[] = []
+    const seen = new Set<string>()
+
+    for (const frame of frames) {
+      try {
+        const raw = (await frame.executeJavaScript(EXTRACT_SCRIPT, true)) as {
+          questions?: RawQuestionDom[]
+        }
+        for (const q of raw?.questions ?? []) {
+          if (!seen.has(q.id)) {
+            seen.add(q.id)
+            allRaw.push(q)
+          }
+        }
+      } catch {
+        /* 个别受限 frame 忽略 */
+      }
+    }
+
     const detectedAt = new Date().toISOString()
     const url = wc.getURL() || null
-    const questions = (raw?.questions ?? []).map((q) =>
-      normalizeQuestion(q, 'testbed', url, detectedAt)
+    const questions = allRaw.map((q) =>
+      normalizeQuestion(q, platformId, url, detectedAt)
     )
     return { questions, error: null }
   } catch (e) {

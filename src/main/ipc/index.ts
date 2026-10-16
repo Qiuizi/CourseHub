@@ -255,6 +255,18 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     return { opened: true }
   })
 
+  handle('browser:capture-view', async (_e, payload) => {
+    const p = payload as { platformId?: unknown }
+    const id = platformId(p?.platformId)
+    const b = deps.browsers.get(id)
+    const wc = b?.webContents
+    if (!wc || wc.isDestroyed()) throw new CodedError('NOT_FOUND', '平台视图未打开')
+    const img = await wc.capturePage()
+    const dataUrl = img.toDataURL()
+    const size = img.getSize()
+    return { dataUrl, width: size.width, height: size.height }
+  })
+
   /* -------------------------------- 签到 -------------------------------- */
 
   handle('classroom:today-signins', async (_e, payload) => {
@@ -912,7 +924,7 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     const id = platformId(p?.platformId)
     const wc = deps.browsers.get(id)?.webContents
     if (!wc) throw new CodedError('NOT_FOUND', '平台视图未打开')
-    const res = await extractQuestions(wc)
+    const res = await extractQuestions(wc, id)
     if (res.error) throw new CodedError('NOT_FOUND', res.error)
     return { questions: res.questions as ClassroomQuestion[] }
   })

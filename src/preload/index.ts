@@ -76,7 +76,9 @@ const api = {
     setVisible: (platformId: PlatformId, visible: boolean) =>
       invoke<{ visible: boolean }>('browser:set-visible', { platformId, visible }),
     openExternal: (platformId: PlatformId, url: string) =>
-      invoke<{ opened: boolean }>('browser:open-external', { platformId, url })
+      invoke<{ opened: boolean }>('browser:open-external', { platformId, url }),
+    captureView: (platformId: PlatformId) =>
+      invoke<{ dataUrl: string; width: number; height: number }>('browser:capture-view', { platformId })
   },
   classroom: {
     todaySignIns: (platformId?: PlatformId) =>

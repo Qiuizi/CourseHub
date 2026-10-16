@@ -13,7 +13,8 @@ import {
   AlertTriangle,
   FileText,
   HelpCircle,
-  Layers
+  Layers,
+  Camera
 } from 'lucide-react'
 import type { PlaybackObservation, TaskType, PlayPolicy } from '@shared/types'
 import { observedProgressPercent, ALLOWED_PLAYBACK_RATES } from '@shared/video'
@@ -67,7 +68,8 @@ export function VideoScene({
   onVolumeChange,
   onRateChange,
   onLoadFixture,
-  onSimulateLifecycle
+  onSimulateLifecycle,
+  onCaptureAndAskAi
 }: {
   platformName: string
   observation: PlaybackObservation | null
@@ -91,6 +93,7 @@ export function VideoScene({
   onRateChange: (v: number) => void
   onLoadFixture: () => void
   onSimulateLifecycle?: (input: { visibility?: 'visible' | 'hidden'; focus?: 'focus' | 'blur' }) => void
+  onCaptureAndAskAi?: () => void
 }): ReactNode {
   const pct = observedProgressPercent(observation)
   const isPlaying = observation?.playerState === 'playing'
@@ -294,20 +297,34 @@ export function VideoScene({
                         : '当前章节为其他拓展任务，请直接在内置视图中查看。'}
                   </span>
                 </div>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => {
-                    const idx = tasks.findIndex((t) => t.id === activeTaskId)
-                    const next = tasks[idx + 1]
-                    if (next) onSelectTask(next.id)
-                  }}
-                  disabled={!tasks.some((_, i) => i === tasks.findIndex((t) => t.id === activeTaskId) + 1)}
-                  title="下一任务"
-                >
-                  <SkipForward size={13} />
-                  下一任务
-                </button>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  {onCaptureAndAskAi && (
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={onCaptureAndAskAi}
+                      title="截取当前画面并唤起右侧 AI 助手"
+                      data-testid="video-capture-ai-btn"
+                    >
+                      <Camera size={13} />
+                      截屏问 AI
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => {
+                      const idx = tasks.findIndex((t) => t.id === activeTaskId)
+                      const next = tasks[idx + 1]
+                      if (next) onSelectTask(next.id)
+                    }}
+                    disabled={!tasks.some((_, i) => i === tasks.findIndex((t) => t.id === activeTaskId) + 1)}
+                    title="下一任务"
+                  >
+                    <SkipForward size={13} />
+                    下一任务
+                  </button>
+                </div>
               </div>
             ) : (
               <>
@@ -386,6 +403,20 @@ export function VideoScene({
                     ))}
                   </div>
                 </div>
+
+                {onCaptureAndAskAi && (
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{ marginLeft: 'auto' }}
+                    onClick={onCaptureAndAskAi}
+                    title="截取当前视频画面并唤起右侧 AI 助教"
+                    data-testid="video-capture-ai-btn"
+                  >
+                    <Camera size={13} />
+                    截屏问 AI
+                  </button>
+                )}
               </>
             )}
           </div>

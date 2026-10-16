@@ -6,9 +6,11 @@ import {
   ExternalLink,
   AlertTriangle,
   Loader2,
-  Globe
+  Globe,
+  Camera,
+  Sparkles
 } from 'lucide-react'
-import type { PlatformId, PlaybackObservation, GeoTestRun, ClassroomQuestion, PlayPolicy, TaskType, AIModelInfo } from '@shared/types'
+import type { PlatformId, PlaybackObservation, GeoTestRun, ClassroomQuestion, PlayPolicy, TaskType, AIModelInfo, AIResult } from '@shared/types'
 import { TopBar, SCENES, type SceneId, type PlatformEntry } from './components/TopBar'
 import { Drawer, type SubmitMode } from './components/Drawer'
 import { CapChip, Notice } from './components/ui'
@@ -55,6 +57,14 @@ export default function App(): JSX.Element {
 
   const [models, setModels] = useState<AIModelInfo[]>([])
   const [modelError, setModelError] = useState<string | null>(null)
+  const [drawerTab, setDrawerTab] = useState<'ai' | 'controls'>('ai')
+  const [drawerAiModelId, setDrawerAiModelId] = useState<string>('deepseek-flash')
+  const [aiPromptText, setAiPromptText] = useState('')
+  const [aiImagePreview, setAiImagePreview] = useState<string | null>(null)
+  const [aiBusy, setAiBusy] = useState(false)
+  const [aiStreamingText, setAiStreamingText] = useState('')
+  const [aiResult, setAiResult] = useState<AIResult | null>(null)
+  const [aiError, setAiError] = useState<string | null>(null)
   const [aiPrefill, setAiPrefill] = useState<ClassroomQuestion | null>(null)
   const [activity, setActivity] = useState<{ id: string; time: string; title: string }[]>([])
   const [theme, setTheme] = useState<'light' | 'dark'>('light')
@@ -110,6 +120,7 @@ export default function App(): JSX.Element {
   /* --------------------------- 事件订阅 --------------------------- */
   useEffect(() => api.events.onVideoObservation(setObservation), [api])
   useEffect(() => api.events.onGeoUpdate(setGeoRun), [api])
+  useEffect(() => api.events.onAiDelta((chunk) => setAiStreamingText((prev) => prev + chunk)), [api])
 
   useEffect(() => {
     const unsub1 = api.events.onContinuousStopped(() => {
@@ -382,6 +393,13 @@ export default function App(): JSX.Element {
       setContinuous(false)
 
       setSelectedCourseName(course.name)
+      // 切换课程时复位 AI 助教上下文，不混用不同课程的题目或截图
+      setAiPromptText('')
+      setAiImagePreview(null)
+      setAiStreamingText('')
+      setAiResult(null)
+      setAiError(null)
+
       setScene('video')
       setNotice(`正在读取 ${course.name} 真实章节目录...`)
       pushActivity(`进入课程学习：${course.name}`)
@@ -527,6 +545,136 @@ export default function App(): JSX.Element {
     void refreshModels()
   }, [refreshModels])
 
+  useEffect(() => {
+    if (models.length > 0) {
+      setDrawerAiModelId((cur) => {
+        if (cur && models.some((m) => m.id === cur)) return cur
+        const vision = models.find((m) => m.inputModalities?.includes('image'))
+        return vision?.id || models[0]!.id
+      })
+    }
+  }, [models])
+
+  const handleDrawerExtract = useCallback(async () => {
+    try {
+      setNotice('正在从当前页面提取题目...')
+      const r = await api.question.extract(activeId)
+      if (!r.ok || !r.data.questions || r.data.questions.length === 0) {
+        setNotice('当前页面未检测到结构化题目，已切换至 AI 助教，可点击「截屏问 AI」或手动输入')
+        setDrawerTab('ai')
+        setDrawerOpen(true)
+        return
+      }
+      const qList = r.data.questions
+      const first = qList[0]!
+      const typeLabel =
+        first.questionType === 'single'
+          ? '单选题'
+          : first.questionType === 'multiple'
+            ? '多选题'
+            : first.questionType === 'judgement'
+              ? '判断题'
+              : first.questionType === 'text'
+                ? '填空/简答题'
+                : '课堂题目'
+      let formatted = `【${typeLabel}】${first.extractedText || ''}\n`
+      if (first.options && first.options.length > 0) {
+        formatted += '\n选项：\n' + first.options.map((opt) => `${opt.key}. ${opt.label}`).join('\n')
+      }
+      setAiPromptText(formatted)
+      setDrawerTab('ai')
+      setDrawerOpen(true)
+      setNotice(`已提取 ${qList.length} 道题目中的第 1 题，可在右侧编辑或直接发送`)
+      pushActivity(`提取题目: ${first.extractedText?.slice(0, 24) ?? first.id}`)
+    } catch (err) {
+      setNotice(`提取题目失败: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }, [activeId, api, pushActivity])
+
+  const handleDrawerCapture = useCallback(async () => {
+    try {
+      setNotice('正在截取当前画面...')
+      const r = await api.browser.captureView(activeId)
+      if (!r.ok || !r.data.dataUrl) {
+        setNotice(`截屏失败: ${r.ok ? '未获取到画面' : r.error.message}`)
+        return
+      }
+      setAiImagePreview(r.data.dataUrl)
+      setDrawerTab('ai')
+      setDrawerOpen(true)
+      if (!aiPromptText.trim()) {
+        setAiPromptText('请逐字识别图中的文字，并分析题目给出答案与解析。')
+      }
+      setNotice('已截取当前课堂画面，可在发送前编辑调整问题')
+      pushActivity('截取当前课堂画面送入 AI')
+    } catch (err) {
+      setNotice(`截屏失败: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }, [activeId, api, aiPromptText, pushActivity])
+
+  const handleDrawerPickImageFile = useCallback((file: File) => {
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const dataUrl = e.target?.result as string
+      if (dataUrl) setAiImagePreview(dataUrl)
+    }
+    reader.readAsDataURL(file)
+  }, [])
+
+  const handleDrawerSubmit = useCallback(async () => {
+    if (!aiPromptText.trim() && !aiImagePreview) return
+    setAiBusy(true)
+    setAiStreamingText('')
+    setAiResult(null)
+    setAiError(null)
+
+    const chosenModel = drawerAiModelId || (models[0]?.id ?? 'deepseek-flash')
+    const isImage = Boolean(aiImagePreview)
+    const systemPrompt = isImage
+      ? '你是一位大学专业课教学与答疑专家。请仔细阅读用户提供的图片与问题，提取题干与选项，给出推导过程和明确的答案建议。'
+      : '你是一位大学专业课教学与答疑专家。请分析题目，给出清晰的推理过程、依据以及最终的推荐答案。'
+
+    try {
+      const res = await api.ai.generate({
+        model: chosenModel,
+        systemPrompt,
+        userText: aiPromptText,
+        imageDataUrl: aiImagePreview ?? null
+      })
+
+      if (res.ok) {
+        if (res.data.cancelled) {
+          setAiError('请求已由用户取消')
+        } else if (res.data.error) {
+          setAiError(res.data.error)
+        } else if (res.data.result) {
+          setAiResult(res.data.result)
+          pushActivity(`AI 分析完成（${res.data.result.isMock ? 'Mock' : chosenModel}）`)
+        }
+      } else {
+        setAiError(`生成失败: ${res.error.code} ${res.error.message}`)
+      }
+    } catch (err) {
+      setAiError(`请求异常: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setAiBusy(false)
+    }
+  }, [aiPromptText, aiImagePreview, drawerAiModelId, models, api, pushActivity])
+
+  const handleDrawerCancel = useCallback(async () => {
+    await api.ai.cancel()
+    setAiBusy(false)
+    setNotice('已取消 AI 生成')
+  }, [api])
+
+  const handleDrawerClearAll = useCallback(() => {
+    setAiPromptText('')
+    setAiImagePreview(null)
+    setAiStreamingText('')
+    setAiResult(null)
+    setAiError(null)
+  }, [])
+
   /**
    * 首屏打开默认平台（测试台）。
    * 不打开的话 WebContentsView 从不创建，视频/浏览场景会是一片空白——
@@ -613,6 +761,7 @@ export default function App(): JSX.Element {
                 }
               })
             }}
+            onCaptureAndAskAi={() => void handleDrawerCapture()}
           />
         )
 
@@ -660,7 +809,29 @@ export default function App(): JSX.Element {
                 ))}
               </div>
 
-              <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+              <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => void handleDrawerExtract()}
+                  title="从当前课堂网页中提取题目并载入右侧 AI 助手"
+                  data-testid="browser-ai-extract"
+                  style={{ fontSize: 11.5 }}
+                >
+                  <Sparkles size={13} />
+                  AI 分析当前题目
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => void handleDrawerCapture()}
+                  title="截取当前视口画面并载入右侧 AI 助手"
+                  data-testid="browser-ai-capture"
+                  style={{ fontSize: 11.5 }}
+                >
+                  <Camera size={13} />
+                  截屏分析
+                </button>
                 {activeId === 'testbed' ? (
                   <>
                     <button
@@ -678,6 +849,14 @@ export default function App(): JSX.Element {
                       onClick={() => void loadFixture('classroom-questions.html')}
                     >
                       测试题目页
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => void loadFixture('chaoxing-classroom-quiz.html')}
+                      data-testid="load-cx-quiz-btn"
+                    >
+                      超星测验页
                     </button>
                   </>
                 ) : (
@@ -773,7 +952,25 @@ export default function App(): JSX.Element {
           <QuizScene
             onAskAi={(q) => {
               setAiPrefill(q)
-              setScene('ai')
+              const typeLabel =
+                q.questionType === 'single'
+                  ? '单选题'
+                  : q.questionType === 'multiple'
+                    ? '多选题'
+                    : q.questionType === 'judgement'
+                      ? '判断题'
+                      : q.questionType === 'text'
+                        ? '填空/简答题'
+                        : '练习题'
+              let formatted = `【${typeLabel}】${q.extractedText || ''}\n`
+              if (q.options && q.options.length > 0) {
+                formatted += '\n选项：\n' + q.options.map((opt) => `${opt.key}. ${opt.label}`).join('\n')
+              }
+              setAiPromptText(formatted)
+              setDrawerTab('ai')
+              setDrawerOpen(true)
+              setNotice('已将作业题目载入右侧 AI 助教，可直接发送分析')
+              pushActivity(`导入作业题至 AI: ${q.extractedText?.slice(0, 20) ?? q.id}`)
             }}
             onGoExtract={() => {
               setScene('browser')
@@ -898,6 +1095,30 @@ export default function App(): JSX.Element {
           onChangeTestLocation={() => setScene('geo')}
           activity={activity}
           drawerOpen={drawerOpen}
+          drawerTab={drawerTab}
+          onDrawerTabChange={setDrawerTab}
+          aiProps={{
+            models,
+            modelError,
+            selectedModelId: drawerAiModelId,
+            onSelectModelId: setDrawerAiModelId,
+            busy: aiBusy,
+            promptText: aiPromptText,
+            onChangePromptText: setAiPromptText,
+            imagePreview: aiImagePreview,
+            onClearImage: () => setAiImagePreview(null),
+            onPickImageFile: handleDrawerPickImageFile,
+            onExtractFromPage: handleDrawerExtract,
+            onCaptureFromPage: handleDrawerCapture,
+            onSubmit: handleDrawerSubmit,
+            onCancel: handleDrawerCancel,
+            onRegenerate: handleDrawerSubmit,
+            onClearAll: handleDrawerClearAll,
+            streamingText: aiStreamingText,
+            result: aiResult,
+            error: aiError,
+            courseName: selectedCourseName
+          }}
         />
       </div>
 
