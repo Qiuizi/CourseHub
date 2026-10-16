@@ -8,7 +8,7 @@ import {
   Loader2,
   Globe
 } from 'lucide-react'
-import type { PlatformId, PlaybackObservation, GeoTestRun, ClassroomQuestion, PlayPolicy, TaskType } from '@shared/types'
+import type { PlatformId, PlaybackObservation, GeoTestRun, ClassroomQuestion, PlayPolicy, TaskType, AIModelInfo } from '@shared/types'
 import { TopBar, SCENES, type SceneId, type PlatformEntry } from './components/TopBar'
 import { Drawer, type SubmitMode } from './components/Drawer'
 import { CapChip, Notice } from './components/ui'
@@ -53,7 +53,7 @@ export default function App(): JSX.Element {
   const [busy, setBusy] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
-  const [models, setModels] = useState<{ id: string; inputModalities: readonly string[] }[]>([])
+  const [models, setModels] = useState<AIModelInfo[]>([])
   const [modelError, setModelError] = useState<string | null>(null)
   const [aiPrefill, setAiPrefill] = useState<ClassroomQuestion | null>(null)
   const [activity, setActivity] = useState<{ id: string; time: string; title: string }[]>([])

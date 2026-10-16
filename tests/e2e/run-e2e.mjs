@@ -849,8 +849,12 @@ async function main() {
       `聚合到 ${acts.length} 个多课程活动，分类：签到(${hasSignIn})/测验(${hasQuiz})/问卷(${hasQuestionnaire})/通知(${hasNotice})`
     )
 
-    // 9.4 DeepSeek 真实调用限制检查：官方模型不支持图片输入，明确拦截且不扣费
-    const deepseekVisionCheck = await win.evaluate(async () => {
+    // 9.4 DeepSeek 真实调用限制检查：按模型精准支持多模态，deepseek-flash 放行图片，纯文本模型拦截引导
+    const deepseekModelsCheck = await win.evaluate(async () => {
+      const res = await window.coursehub.ai.models()
+      return res
+    })
+    const deepseekChatVisionCheck = await win.evaluate(async () => {
       const res = await window.coursehub.ai.generate({
         model: 'deepseek-chat',
         systemPrompt: '助教模式',
@@ -859,13 +863,40 @@ async function main() {
       })
       return res
     })
-    const visionErrorMsg = deepseekVisionCheck?.ok
-      ? deepseekVisionCheck?.data?.error
-      : deepseekVisionCheck?.error?.message
+    const deepseekFlashVisionCheck = await win.evaluate(async () => {
+      const res = await window.coursehub.ai.generate({
+        model: 'deepseek-flash',
+        systemPrompt: '助教模式',
+        userText: '请分析这张课程作业截图',
+        imageDataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
+      })
+      return res
+    })
+    const chatErrorMsg = deepseekChatVisionCheck?.ok
+      ? (typeof deepseekChatVisionCheck?.data?.error === 'string' ? deepseekChatVisionCheck?.data?.error : deepseekChatVisionCheck?.data?.error?.message)
+      : deepseekChatVisionCheck?.error?.message
+    const flashErrorMsg = deepseekFlashVisionCheck?.ok
+      ? (typeof deepseekFlashVisionCheck?.data?.error === 'string' ? deepseekFlashVisionCheck?.data?.error : deepseekFlashVisionCheck?.data?.error?.message)
+      : deepseekFlashVisionCheck?.error?.message
+
+    const modelsList = deepseekModelsCheck?.ok ? deepseekModelsCheck.data.models : (deepseekModelsCheck?.models || [])
+    const flashModel = modelsList.find((m) => m.id === 'deepseek-flash')
+    const hasFlashWithVision = flashModel && Array.isArray(flashModel.inputModalities) && flashModel.inputModalities.includes('image')
+    const chatBlocked = typeof chatErrorMsg === 'string' && chatErrorMsg.includes('不支持图片输入') && chatErrorMsg.includes('deepseek-flash')
+    // deepseek-flash 允许图片通过视觉校验，到达 API Key 校验环节（未配 key 时报 AI_KEY_INVALID，不报 UNSUPPORTED）
+    const flashPassedVisionCheck = typeof flashErrorMsg === 'string' && flashErrorMsg.includes('AI_KEY_INVALID') && !flashErrorMsg.includes('UNSUPPORTED')
+
     record(
-      'v0.3.9-4：DeepSeek 多模态能力核验（官方模型明确拒绝图片并友好提示，不发伪请求）',
-      typeof visionErrorMsg === 'string' && visionErrorMsg.includes('不支持图片输入'),
-      JSON.stringify(deepseekVisionCheck)
+      'v0.3.9-4：DeepSeek 多模态能力核验（deepseek-flash 支持图片，纯文本模型拦截并引导切换）',
+      Boolean(hasFlashWithVision && chatBlocked && flashPassedVisionCheck),
+      JSON.stringify({
+        hasFlashWithVision,
+        chatBlocked,
+        flashPassedVisionCheck,
+        chatCheck: deepseekChatVisionCheck,
+        flashCheck: deepseekFlashVisionCheck,
+        modelsCheck: deepseekModelsCheck
+      })
     )
 
     // 9.5 DeepSeek Token 与 Mock 状态清晰透传

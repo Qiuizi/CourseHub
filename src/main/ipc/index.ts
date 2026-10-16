@@ -863,8 +863,7 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
 
   handle('ai:models', async () => {
     const { models, error } = await ai.listModels()
-    if (error) return { models: [], error }
-    return { models, error: null }
+    return { models, error }
   })
 
   handle('ai:generate', async (_e, payload) => {

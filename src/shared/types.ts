@@ -251,6 +251,9 @@ export interface AIModelInfo {
   contextWindow: number | null
   maxOutputTokens: number | null
   inputModalities: readonly AIModelModality[]
+  outputModalities?: readonly string[]
+  supportedReasoningEfforts?: readonly string[] | null
+  defaultReasoningEffort?: string | null
   /** 来自 /models 的原始记录，便于排障 */
   raw: unknown
 }

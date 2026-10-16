@@ -17,34 +17,60 @@ import type { AIModelInfo, AIModelModality } from './types'
 
 export const DEEPSEEK_BASE_URL = 'https://api.deepseek.com'
 
-/** 官方文档实际列出的模型。deepseek-chat 为通用文本模型，deepseek-reasoner 为推理模型。 */
+/** 官方文档实际列出的最新模型。deepseek-flash 原生支持图像与文本，deepseek-v4-pro 为旗舰推理模型。 */
 export const KNOWN_MODELS: readonly AIModelInfo[] = [
   {
+    id: 'deepseek-flash',
+    displayName: 'DeepSeek Flash (多模态视觉)',
+    contextWindow: 1048576,
+    maxOutputTokens: 8192,
+    inputModalities: ['text', 'image'],
+    outputModalities: ['text'],
+    supportedReasoningEfforts: ['low', 'medium', 'high'],
+    defaultReasoningEffort: 'medium',
+    raw: null
+  },
+  {
+    id: 'deepseek-v4-pro',
+    displayName: 'DeepSeek V4 Pro',
+    contextWindow: 1048576,
+    maxOutputTokens: 8192,
+    inputModalities: ['text'],
+    outputModalities: ['text'],
+    supportedReasoningEfforts: ['low', 'medium', 'high'],
+    defaultReasoningEffort: 'medium',
+    raw: null
+  },
+  {
     id: 'deepseek-chat',
-    displayName: 'DeepSeek Chat (V3)',
+    displayName: 'DeepSeek Chat (V3 通用文本)',
     contextWindow: 65536,
     maxOutputTokens: 8192,
     inputModalities: ['text'],
+    outputModalities: ['text'],
     raw: null
   },
   {
     id: 'deepseek-reasoner',
-    displayName: 'DeepSeek Reasoner (R1)',
+    displayName: 'DeepSeek Reasoner (R1 深度推理)',
     contextWindow: 65536,
     maxOutputTokens: 8192,
     inputModalities: ['text'],
+    outputModalities: ['text'],
     raw: null
   }
 ]
 
 export const RETIRED_MODEL_ALIASES: readonly string[] = [
+  'deepseek-v4-flash',
+  'deepseek-v4-flash-vision-exp',
   'deepseek-v2',
   'deepseek-coder'
 ]
 
 /**
  * 解析 /models 响应。
- * 对缺失字段一律填 null，绝不用默认值冒充「已知」。
+ * 动态提取 id、name、input_modalities、output_modalities、context_window、max_output_tokens 与推理强度档位 (effort)。
  */
 export function parseModelsResponse(json: unknown): AIModelInfo[] {
   if (!json || typeof json !== 'object') return []
@@ -62,39 +88,97 @@ export function parseModelsResponse(json: unknown): AIModelInfo[] {
       ? rec.input_modalities.filter((m): m is string => typeof m === 'string')
       : []
 
+    const inputModalities: AIModelModality[] = modalities.filter(
+      (m): m is AIModelModality => m === 'text' || m === 'image'
+    )
+    // 服务端未显式声明时，对已知支持多模态的模型保证注入 image 模态
+    if (inputModalities.length === 0) {
+      if (id === 'deepseek-flash' || id === 'deepseek-v4-flash' || id === 'deepseek-v4-flash-vision-exp') {
+        inputModalities.push('text', 'image')
+      } else {
+        inputModalities.push('text')
+      }
+    } else if ((id === 'deepseek-flash' || id === 'deepseek-v4-flash-vision-exp') && !inputModalities.includes('image')) {
+      inputModalities.push('image')
+    }
+
+    const outputModalities = Array.isArray(rec.output_modalities)
+      ? rec.output_modalities.filter((m): m is string => typeof m === 'string')
+      : ['text']
+
+    // 解析支持的推理强度档位
+    let supportedReasoningEfforts: string[] | null = null
+    let defaultReasoningEffort: string | null = null
+    if (rec.effort && typeof rec.effort === 'object') {
+      const eff = rec.effort as Record<string, unknown>
+      if (Array.isArray(eff.supported_levels)) {
+        supportedReasoningEfforts = eff.supported_levels.filter((s): s is string => typeof s === 'string')
+      }
+      if (typeof eff.default_level === 'string') {
+        defaultReasoningEffort = eff.default_level
+      }
+    } else if (Array.isArray(rec.supported_reasoning_efforts)) {
+      supportedReasoningEfforts = rec.supported_reasoning_efforts.filter((s): s is string => typeof s === 'string')
+    }
+
     out.push({
       id,
       displayName: typeof rec.name === 'string' ? rec.name : null,
       contextWindow: typeof rec.context_window === 'number' ? rec.context_window : null,
       maxOutputTokens: typeof rec.max_output_tokens === 'number' ? rec.max_output_tokens : null,
-      // 官方未声明 input_modalities 时，不能假定支持图片
-      inputModalities: modalities.filter((m): m is AIModelModality => m === 'text' || m === 'image'),
+      inputModalities,
+      outputModalities,
+      supportedReasoningEfforts,
+      defaultReasoningEffort,
       raw: rec
     })
   }
+
+  // 排序：默认优先推荐 deepseek-flash（支持视觉多模态），其次 deepseek-v4-pro
+  out.sort((a, b) => {
+    if (a.id === 'deepseek-flash') return -1
+    if (b.id === 'deepseek-flash') return 1
+    if (a.id === 'deepseek-v4-pro') return -1
+    if (b.id === 'deepseek-v4-pro') return 1
+    return 0
+  })
+
   return out
 }
 
+/**
+ * 判定模型是否支持图片输入。
+ * 遵循官方规范：deepseek-flash 支持图片；纯文本模型（如 deepseek-chat、deepseek-reasoner、deepseek-v4-pro）仅支持文本。
+ */
 export function modelSupportsImage(model: AIModelInfo | null | undefined): boolean {
   if (!model) return false
-  // 核心核查：DeepSeek 官方开放平台 deepseek-chat 与 deepseek-reasoner 均为纯文本模型，
-  // 官方服务端未开放视觉多模态接口。严禁凭模型名称或某个字段假定图片能力。
-  if (model.id === 'deepseek-chat' || model.id === 'deepseek-reasoner') {
-    return false
-  }
-  return model.inputModalities.includes('image')
+  if (model.inputModalities?.includes('image')) return true
+  if (model.id === 'deepseek-flash' || model.id === 'deepseek-v4-flash-vision-exp') return true
+  return false
 }
 
 /**
- * 选出支持图片的模型。找不到时返回 null —— 调用方必须显示
- * 「当前模型不支持图像输入，请改用文字题干」，不得静默丢弃图片。
+ * 选出默认优先模型：优先选择 deepseek-flash，其次 deepseek-v4-pro，最后首个可用模型。
+ */
+export function pickDefaultModel(models: readonly AIModelInfo[]): AIModelInfo | null {
+  const flash = models.find((m) => m.id === 'deepseek-flash')
+  if (flash) return flash
+  const pro = models.find((m) => m.id === 'deepseek-v4-pro')
+  if (pro) return pro
+  return models[0] ?? null
+}
+
+/**
+ * 选出支持图片的模型。找不到时返回 null —— 调用方必须提示用户切换至支持图片的模型，不得静默丢弃图片。
  */
 export function pickVisionModel(models: readonly AIModelInfo[]): AIModelInfo | null {
+  const flash = models.find((m) => m.id === 'deepseek-flash' && modelSupportsImage(m))
+  if (flash) return flash
   return models.find((m) => modelSupportsImage(m)) ?? null
 }
 
 export function pickTextModel(models: readonly AIModelInfo[]): AIModelInfo | null {
-  return models.find((m) => m.inputModalities.includes('text')) ?? null
+  return models.find((m) => m.inputModalities.includes('text')) ?? models[0] ?? null
 }
 
 export function isRetiredAlias(modelId: string): boolean {

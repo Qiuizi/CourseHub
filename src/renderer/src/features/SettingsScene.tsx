@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import { Card, Notice, Rows, Seg, Switch, CapChip, Empty } from '../components/ui'
 import { isRetiredAlias, KNOWN_MODELS } from '@shared/deepseek'
+import type { AIModelInfo } from '@shared/types'
 
 export interface SettingsSceneProps {
   theme: 'light' | 'dark'
@@ -40,7 +41,7 @@ export function SettingsScene({
   const [showKey, setShowKey] = useState(false)
   const [guide, setGuide] = useState(false)
   const [advanced, setAdvanced] = useState(false)
-  const [models, setModels] = useState<{ id: string; inputModalities: readonly string[] }[]>([])
+  const [models, setModels] = useState<AIModelInfo[]>([])
   const [modelError, setModelError] = useState<string | null>(null)
   const [loadingModels, setLoadingModels] = useState(false)
   const [notifications, setNotifications] = useState(true)
@@ -217,13 +218,23 @@ export function SettingsScene({
                   border: '1px solid var(--ch-border)'
                 }}
               >
-                <span style={{ fontSize: 12, fontFamily: 'ui-monospace, Consolas, monospace' }}>{m.id}</span>
-                <span style={{ display: 'flex', gap: 6 }}>
-                  {m.inputModalities.includes('image') ? (
-                    <span className="chip chip-emerald">支持图片</span>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 500 }}>
+                    {m.displayName ?? m.id}
+                  </div>
+                  <div style={{ fontSize: 11, fontFamily: 'ui-monospace, Consolas, monospace', color: 'var(--ch-text-2)' }}>
+                    {m.id}
+                    {m.contextWindow && ` · ${Math.round(m.contextWindow / 1024)}k 上下文`}
+                    {m.supportedReasoningEfforts && m.supportedReasoningEfforts.length > 0 && ` · 推理档位 [${m.supportedReasoningEfforts.join('/')}]`}
+                  </div>
+                </div>
+                <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  {m.inputModalities.includes('image') || m.id === 'deepseek-flash' ? (
+                    <span className="chip chip-emerald">📸 支持图片理解</span>
                   ) : (
-                    <span className="chip">仅文本</span>
+                    <span className="chip">📝 仅纯文本</span>
                   )}
+                  {m.id === 'deepseek-flash' && <span className="chip chip-tint">默认推荐</span>}
                   {isRetiredAlias(m.id) && <span className="chip chip-neutral">legacy 别名</span>}
                 </span>
               </li>
@@ -233,19 +244,19 @@ export function SettingsScene({
 
         {advanced && (
           <div style={{ marginTop: 12 }}>
-            <Notice tone="warn">
-              官方当前模型为 <code>deepseek-flash</code>（支持图片）与 <code>deepseek-v4-pro</code>。
+            <Notice tone="info">
+              DeepSeek 官方多模态视觉模型为 <code>deepseek-flash</code>，支持文本及图像输入（JPEG / PNG / GIF / WebP），上下文最大达 1M tokens。
               <br />
-              <code>deepseek-v4-flash</code>、<code>deepseek-v4-flash-vision-exp</code>、
-              <code>deepseek-chat</code>、<code>deepseek-reasoner</code> 均为已退役 legacy 别名，
-              请求虽被接受但由新模型服务。界面不应把旧名当默认值。
+              通用纯文本模型为 <code>deepseek-chat</code>，深度推理模型为 <code>deepseek-reasoner</code>。
+              CourseHub 默认优先选用 <code>deepseek-flash</code> 并在上方界面支持自由切换。
             </Notice>
             <div style={{ marginTop: 10 }}>
               <Rows
                 items={[
-                  { k: '接口地址', v: 'https://api.deepseek.com', mono: true },
-                  { k: '图片格式', v: 'JPEG / PNG / GIF / WebP', mono: true },
-                  { k: '图片位置', v: '仅 user 消息（system/assistant 会返回 400）', mono: true }
+                  { k: '接口基地址', v: 'https://api.deepseek.com', mono: true },
+                  { k: '视觉支持模型', v: 'deepseek-flash（Chat Completions 文本 + image_url 格式）', mono: true },
+                  { k: '图片支持格式', v: 'JPEG / PNG / GIF / WebP (base64 内联)', mono: true },
+                  { k: '视觉能力类型', v: '图像理解与 OCR 分析（注：不支持生成图片）', mono: true }
                 ]}
               />
             </div>

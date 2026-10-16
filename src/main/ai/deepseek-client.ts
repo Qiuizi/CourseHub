@@ -29,7 +29,7 @@ export class DeepSeekClient {
 
   async listModels(): Promise<{ models: AIModelInfo[]; error: string | null }> {
     const key = await this.apiKey()
-    if (!key) return { models: [], error: 'AI_KEY_INVALID: 未配置 API Key' }
+    if (!key) return { models: [...KNOWN_MODELS], error: 'AI_KEY_INVALID: 未配置 API Key' }
 
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 20_000)
@@ -40,13 +40,14 @@ export class DeepSeekClient {
         signal: controller.signal
       })
       if (!resp.ok) {
-        return { models: [], error: `HTTP_${resp.status}: ${await safeText(resp)}` }
+        return { models: [...KNOWN_MODELS], error: `HTTP_${resp.status}: ${await safeText(resp)}` }
       }
       const json = (await resp.json()) as unknown
-      return { models: parseModelsResponse(json), error: null }
+      const parsed = parseModelsResponse(json)
+      return { models: parsed.length > 0 ? parsed : [...KNOWN_MODELS], error: null }
     } catch (e) {
       const msg = e instanceof Error ? e.name === 'AbortError' ? 'NETWORK_TIMEOUT' : e.message : String(e)
-      return { models: [], error: String(msg) }
+      return { models: [...KNOWN_MODELS], error: String(msg) }
     } finally {
       clearTimeout(timer)
     }
@@ -61,7 +62,8 @@ export class DeepSeekClient {
 
   /**
    * 流式生成。onDelta 逐段回调，返回完整结果。
-   * 图片输入时先校验模型是否真的支持 image，不支持则明确报错而非静默丢图。
+   * 支持纯文本与文本 + image_url 官方多模态格式。
+   * 仅当所选模型不含 image 模态时，明确报错提示切换至 deepseek-flash。
    */
   async generate(input: {
     model: string
@@ -72,16 +74,16 @@ export class DeepSeekClient {
     modelsHint?: readonly AIModelInfo[]
     onDelta: (chunk: string) => void
   }): Promise<{ result: AIResult | null; error: string | null; cancelled: boolean }> {
-    // 图片能力严格核查：DeepSeek 官方 API（deepseek-chat / deepseek-reasoner）均为纯文本，不支持图片
+    // 图片能力按模型精准校验：deepseek-flash 支持图片；仅不支持图片的模型被拦截
     if (input.imageDataUrl) {
       const hint =
         input.modelsHint?.find((m) => m.id === input.model) ||
         KNOWN_MODELS.find((m) => m.id === input.model)
-      const isVision = hint ? modelSupportsImage(hint) : false
+      const isVision = hint ? modelSupportsImage(hint) : input.model === 'deepseek-flash'
       if (!isVision) {
         return {
           result: null,
-          error: `UNSUPPORTED: 模型 ${input.model} 不支持图片输入（DeepSeek 官方 API 当前为纯文本模型）。请在题干中输入题目文字。`,
+          error: `UNSUPPORTED: 当前所选模型 ${input.model} 不支持图片输入（input_modalities 未包含 image）。请切换至支持图片的 deepseek-flash 模型，或以纯文本输入。`,
           cancelled: false
         }
       }
@@ -102,10 +104,11 @@ export class DeepSeekClient {
     this.activeAbort = controller
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
 
+    const promptText = input.userText.trim() || '请识别并分析图片中的内容。'
     const userContent: unknown = input.imageDataUrl
       ? [
-          { type: 'text', text: input.userText },
-          // 图片只放在 user 消息中（官方限制）
+          { type: 'text', text: promptText },
+          // 官方规范：图片只放在 user 消息中，格式为 { type: "image_url", image_url: { url: ... } }
           { type: 'image_url', image_url: { url: input.imageDataUrl } }
         ]
       : input.userText

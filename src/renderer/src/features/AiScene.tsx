@@ -12,9 +12,10 @@ import {
   AlertTriangle,
   ClipboardList
 } from 'lucide-react'
-import type { AIResult, ClassroomQuestion } from '@shared/types'
+import type { AIModelInfo, AIResult, ClassroomQuestion } from '@shared/types'
 import { Card, Notice, CapChip, Empty } from '../components/ui'
 import { buildTestPlan, validatePlanAgainstQuestion, isTestableType } from '@shared/question'
+import { modelSupportsImage, pickDefaultModel, pickVisionModel } from '@shared/deepseek'
 
 type Role = 'user' | 'ai' | 'system'
 
@@ -30,7 +31,7 @@ interface Turn {
 }
 
 export interface AiSceneProps {
-  models: { id: string; inputModalities: readonly string[] }[]
+  models: AIModelInfo[]
   modelError: string | null
   onRefreshModels: () => void
   onGenerate: (input: {
@@ -49,13 +50,13 @@ const SYSTEM_PROMPT = `你是 CourseHub 课堂助手。规则：
 1. 只依据用户提供的题干与选项作答，不引入外部假设。
 2. 给出建议选项、简要解析，并明确说明不确定性。
 3. 若题干信息不足或图片不清晰，直接说"无法确定"，不要猜。
-4. 用简体中文回答，控制在 300 字以内。`
+4. 明确能力边界：你支持识别与理解用户上传的图片（Vision），但不具备文本生成图片功能。
+5. 用简体中文回答，控制在 300 字以内。`
 
 /**
  * DeepSeek 课堂助手。
  *
- * 形态对齐成熟 AI 助手：多轮对话、流式输出、可取消。
- * API Key / 模型发现 / 连通性测试移到设置页，不占据主界面。
+ * 形态对齐成熟 AI 助手：多轮对话、流式输出、可取消、支持图片理解与自由模型切换。
  */
 export function AiScene({
   models,
@@ -75,13 +76,25 @@ export function AiScene({
   const [questions, setQuestions] = useState<ClassroomQuestion[]>([])
   const [extractMsg, setExtractMsg] = useState<string | null>(null)
   const [previewPlan, setPreviewPlan] = useState<{ question: ClassroomQuestion; keys: string[] } | null>(null)
+  const [selectedModelId, setSelectedModelId] = useState<string>('deepseek-flash')
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const fileRef = useRef<HTMLInputElement | null>(null)
   const activeAiId = useRef<string | null>(null)
 
-  const visionModel = models.find((m) => m.inputModalities.includes('image'))
-  const textModel = models.find((m) => m.inputModalities.includes('text')) ?? models[0] ?? null
+  // 默认优先选择 deepseek-flash（官方多模态视觉模型）
+  useEffect(() => {
+    if (models.length > 0) {
+      if (!models.some((m) => m.id === selectedModelId)) {
+        const def = pickDefaultModel(models)
+        if (def) setSelectedModelId(def.id)
+      }
+    }
+  }, [models, selectedModelId])
+
+  const currentModel = models.find((m) => m.id === selectedModelId) ?? pickDefaultModel(models) ?? models[0] ?? null
+  const isCurrentVision = currentModel ? modelSupportsImage(currentModel) : false
+  const visionModel = pickVisionModel(models)
 
   // 流式增量
   useEffect(() => {
@@ -102,7 +115,7 @@ export function AiScene({
   const send = useCallback(async () => {
     const text = input.trim()
     if (!text && !image) return
-    if (!textModel) {
+    if (!currentModel) {
       setTurns((p) => [
         ...p,
         {
@@ -114,13 +127,14 @@ export function AiScene({
       ])
       return
     }
-    if (image && !visionModel) {
+
+    if (image && !isCurrentVision) {
       setTurns((p) => [
         ...p,
         {
           id: `s-${Date.now()}`,
           role: 'system',
-          text: `当前模型 ${textModel.id} 未声明支持图片输入（/models 的 input_modalities 不含 image）。请改用文字题干，或在设置页选择支持图片的模型。`,
+          text: `当前所选模型 ${currentModel.id} 仅支持纯文本，不支持图片输入。请在上方模型选择中切换至 deepseek-flash（支持视觉多模态），或清除图片以纯文本发送。`,
           at: new Date().toISOString()
         }
       ])
@@ -133,8 +147,8 @@ export function AiScene({
 
     setTurns((p) => [
       ...p,
-      { id: userId, role: 'user', text: text || '（仅截图提问）', at: new Date().toISOString(), imagePreview: image },
-      { id: aiId, role: 'ai', text: '', model: textModel.id, at: new Date().toISOString(), streaming: true }
+      { id: userId, role: 'user', text: text || '（附带题目截图）', at: new Date().toISOString(), imagePreview: image },
+      { id: aiId, role: 'ai', text: '', model: currentModel.id, at: new Date().toISOString(), streaming: true }
     ])
     setInput('')
     setImage(null)
@@ -143,7 +157,7 @@ export function AiScene({
 
     try {
       const res = await onGenerate({
-        model: image ? (visionModel?.id ?? textModel.id) : textModel.id,
+        model: currentModel.id,
         systemPrompt: SYSTEM_PROMPT,
         userText: text || '请读取截图中的题目与选项，给出建议答案与解析。',
         imageDataUrl: image
@@ -188,7 +202,7 @@ export function AiScene({
       setBusy(false)
       activeAiId.current = null
     }
-  }, [input, image, textModel, visionModel, onGenerate])
+  }, [input, image, currentModel, isCurrentVision, onGenerate])
 
   const onPickImage = useCallback((file: File | undefined) => {
     if (!file) return
@@ -251,19 +265,47 @@ export function AiScene({
           </div>
         }
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 11, color: 'var(--ch-text-2)' }}>当前模型</span>
-          {textModel ? (
-            <span className="chip chip-tint" data-testid="ai-current-model">
-              {textModel.id}
-              {textModel.inputModalities.includes('image') ? ' · 支持图片' : ' · 仅文本'}
-            </span>
-          ) : (
-            <CapChip state="unsupported" compact />
-          )}
-          {modelError && (
-            <span style={{ fontSize: 11, color: '#b91c1c' }}>{modelError}</span>
-          )}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--ch-text-2)' }}>选择模型：</span>
+            {models.length > 0 ? (
+              <select
+                className="field"
+                style={{ padding: '3px 10px', fontSize: 12, minWidth: 200, height: 30 }}
+                value={selectedModelId}
+                onChange={(e) => setSelectedModelId(e.target.value)}
+                data-testid="ai-model-select"
+              >
+                {models.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.displayName ? `${m.displayName} (${m.id})` : m.id} {modelSupportsImage(m) ? '📸 视觉' : '📝 纯文本'}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <CapChip state="unsupported" compact />
+            )}
+
+            {currentModel && (
+              <span className={`chip ${isCurrentVision ? 'chip-emerald' : 'chip-neutral'}`} data-testid="ai-current-model" style={{ fontSize: 11 }}>
+                {currentModel.id} · {isCurrentVision ? '支持图片理解' : '仅纯文本'}
+              </span>
+            )}
+
+            {currentModel?.contextWindow && (
+              <span className="chip" style={{ fontSize: 11, opacity: 0.8 }}>
+                上下文: {Math.round(currentModel.contextWindow / 1024)}k
+              </span>
+            )}
+
+            {modelError && (
+              <span style={{ fontSize: 11, color: '#b91c1c' }}>{modelError}</span>
+            )}
+          </div>
+
+          <div style={{ fontSize: 11, color: 'var(--ch-text-3)' }}>
+            💡 DeepSeek 提供图像理解/OCR/题目分析，不支持文本生成图片
+          </div>
         </div>
       </Card>
 
@@ -347,6 +389,25 @@ export function AiScene({
           </div>
         )}
 
+        {/* 若附加了图片但当前模型仅纯文本，提示用户一键切换 */}
+        {image && !isCurrentVision && (
+          <div style={{ marginTop: 8 }}>
+            <Notice tone="warn">
+              当前所选模型 <strong>{currentModel?.id}</strong> 未开启图片理解，无法分析图片。
+              {visionModel && (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  style={{ marginLeft: 8, padding: '2px 8px', fontSize: 11 }}
+                  onClick={() => setSelectedModelId(visionModel.id)}
+                >
+                  一键切换至 {visionModel.id}（支持图片）
+                </button>
+              )}
+            </Notice>
+          </div>
+        )}
+
         {/* 输入区 */}
         <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'flex-end' }}>
           <input
@@ -360,7 +421,7 @@ export function AiScene({
           <button
             type="button"
             className="icon-btn"
-            title="附加截图（JPEG/PNG/GIF/WebP）"
+            title="附加截图（支持 PNG/JPEG/GIF/WebP 或直接 Ctrl+V 粘贴截图）"
             onClick={() => fileRef.current?.click()}
             disabled={busy}
           >
@@ -370,9 +431,24 @@ export function AiScene({
           <textarea
             className="field"
             rows={2}
-            placeholder="输入题目或问题，Enter 发送，Shift+Enter 换行"
+            placeholder={isCurrentVision ? "输入题目或问题，支持直接 Ctrl+V 粘贴截图，Enter 发送" : "输入题目或问题，Enter 发送，Shift+Enter 换行"}
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onPaste={(e) => {
+              const items = e.clipboardData?.items
+              if (!items) return
+              for (let i = 0; i < items.length; i++) {
+                const item = items[i]
+                if (item?.type.startsWith('image/')) {
+                  const file = item.getAsFile()
+                  if (file) {
+                    e.preventDefault()
+                    onPickImage(file)
+                    break
+                  }
+                }
+              }
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()

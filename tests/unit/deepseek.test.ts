@@ -12,15 +12,17 @@ import {
   modelSupportsImage,
   pickVisionModel,
   pickTextModel,
+  pickDefaultModel,
   isRetiredAlias,
   redactForOutbound,
   extractJson,
   RETIRED_MODEL_ALIASES,
   KNOWN_MODELS
 } from '@shared/deepseek'
+import { DeepSeekClient } from '../../src/main/ai/deepseek-client'
 
 describe('parseModelsResponse', () => {
-  it('解析官方 schema 字段', () => {
+  it('解析官方 schema 字段（含多模态与推理强度）', () => {
     const json = {
       object: 'list',
       data: [
@@ -29,32 +31,57 @@ describe('parseModelsResponse', () => {
           object: 'model',
           owned_by: 'deepseek',
           name: 'DeepSeek Flash',
-          context_window: 128000,
+          context_window: 1048576,
           max_output_tokens: 8192,
           input_modalities: ['text', 'image'],
+          output_modalities: ['text'],
+          effort: {
+            supported_levels: ['low', 'medium', 'high'],
+            default_level: 'medium'
+          }
+        },
+        {
+          id: 'deepseek-v4-pro',
+          object: 'model',
+          name: 'DeepSeek V4 Pro',
+          context_window: 1048576,
+          max_output_tokens: 8192,
+          input_modalities: ['text'],
           output_modalities: ['text']
         }
       ]
     }
     const models = parseModelsResponse(json)
-    expect(models).toHaveLength(1)
+    expect(models).toHaveLength(2)
+    // 优先推荐 deepseek-flash 置顶
     expect(models[0]!.id).toBe('deepseek-flash')
     expect(models[0]!.inputModalities).toEqual(['text', 'image'])
-    expect(models[0]!.contextWindow).toBe(128000)
+    expect(models[0]!.contextWindow).toBe(1048576)
     expect(models[0]!.displayName).toBe('DeepSeek Flash')
+    expect(models[0]!.supportedReasoningEfforts).toEqual(['low', 'medium', 'high'])
+    expect(models[0]!.defaultReasoningEffort).toBe('medium')
+
+    expect(models[1]!.id).toBe('deepseek-v4-pro')
+    expect(models[1]!.inputModalities).toEqual(['text'])
   })
 
-  it('缺失字段填 null 而非默认值', () => {
-    const models = parseModelsResponse({ data: [{ id: 'x' }] })
+  it('缺失字段填 null 而非默认值（常规非 flash 模型）', () => {
+    const models = parseModelsResponse({ data: [{ id: 'custom-model' }] })
     expect(models[0]!.contextWindow).toBeNull()
     expect(models[0]!.maxOutputTokens).toBeNull()
     expect(models[0]!.displayName).toBeNull()
-    expect(models[0]!.inputModalities).toEqual([])
+    expect(models[0]!.inputModalities).toEqual(['text'])
   })
 
-  it('未声明 input_modalities 时不假定支持图片', () => {
+  it('未声明 input_modalities 时常规模型不假定支持图片', () => {
     const models = parseModelsResponse({ data: [{ id: 'unknown-modality-model' }] })
     expect(modelSupportsImage(models[0])).toBe(false)
+  })
+
+  it('对 deepseek-flash 保证具备 image 模态', () => {
+    const models = parseModelsResponse({ data: [{ id: 'deepseek-flash' }] })
+    expect(models[0]!.inputModalities).toContain('image')
+    expect(modelSupportsImage(models[0])).toBe(true)
   })
 
   it('过滤非法模态值', () => {
@@ -70,7 +97,15 @@ describe('parseModelsResponse', () => {
   })
 })
 
-describe('模型能力选择', () => {
+describe('模型能力选择与视觉判断', () => {
+  it('deepseek-flash 默认支持图片输入（Vision）', () => {
+    const flash = KNOWN_MODELS.find((m) => m.id === 'deepseek-flash')!
+    expect(flash).toBeDefined()
+    expect(modelSupportsImage(flash)).toBe(true)
+    expect(pickVisionModel(KNOWN_MODELS)?.id).toBe('deepseek-flash')
+    expect(pickDefaultModel(KNOWN_MODELS)?.id).toBe('deepseek-flash')
+  })
+
   it('deepseek-chat 与 deepseek-reasoner 为官方纯文本模型，不假定图片能力', () => {
     const chat = KNOWN_MODELS.find((m) => m.id === 'deepseek-chat')!
     const reasoner = KNOWN_MODELS.find((m) => m.id === 'deepseek-reasoner')!
@@ -78,11 +113,7 @@ describe('模型能力选择', () => {
     expect(modelSupportsImage(reasoner)).toBe(false)
   })
 
-  it('官方 DeepSeek 模型列表无图片模型时 pickVisionModel 返回 null，不静默降级', () => {
-    expect(pickVisionModel(KNOWN_MODELS)).toBeNull()
-  })
-
-  it('具有 image 模态的非 deepseek 专属模型可被正常识别', () => {
+  it('具有 image 模态的模型均能被识别为视觉模型', () => {
     const customVision = {
       id: 'custom-vision-model',
       displayName: 'Custom Vision',
@@ -95,6 +126,13 @@ describe('模型能力选择', () => {
     expect(pickVisionModel([customVision])?.id).toBe('custom-vision-model')
   })
 
+  it('纯文本模型列表无图片模型时 pickVisionModel 返回 null', () => {
+    const textOnly = [
+      { id: 't1', displayName: 'T1', contextWindow: null, maxOutputTokens: null, inputModalities: ['text'] as const, raw: null }
+    ]
+    expect(pickVisionModel(textOnly)).toBeNull()
+  })
+
   it('选出文本模型', () => {
     expect(pickTextModel(KNOWN_MODELS)).not.toBeNull()
   })
@@ -102,6 +140,7 @@ describe('模型能力选择', () => {
   it('空列表安全', () => {
     expect(pickVisionModel([])).toBeNull()
     expect(pickTextModel([])).toBeNull()
+    expect(pickDefaultModel([])).toBeNull()
     expect(modelSupportsImage(null)).toBe(false)
     expect(modelSupportsImage(undefined)).toBe(false)
   })
@@ -172,5 +211,70 @@ describe('extractJson 三级容错', () => {
   it('完全无 JSON 时返回 null', () => {
     expect(extractJson('这不是 JSON')).toBeNull()
     expect(extractJson('')).toBeNull()
+  })
+})
+
+describe('DeepSeekClient 视觉输入校验与多模态格式测试', () => {
+  const dummyStore: any = {
+    getSecret: () => Promise.resolve('sk-test-mock-key-12345678')
+  }
+
+  const client = new DeepSeekClient(dummyStore)
+
+  it('deepseek-flash 支持 JPEG / PNG / GIF / WebP 截图或图片', async () => {
+    const pngUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
+    const jpegUrl = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA='
+    const webpUrl = 'data:image/webp;base64,UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA=='
+
+    for (const imgUrl of [pngUrl, jpegUrl, webpUrl]) {
+      // 触发生成，由于使用 mock key，网络请求会因 mock 地址报错，但应顺利通过前端与客户端视觉格式校验
+      const res = await client.generate({
+        model: 'deepseek-flash',
+        systemPrompt: '助教模式',
+        userText: '解析试卷图表',
+        imageDataUrl: imgUrl,
+        onDelta: () => {}
+      })
+      // 不应当报告 UNSUPPORTED 图片错误
+      expect(res.error).not.toContain('不支持图片输入')
+      expect(res.error).not.toContain('图片格式必须是')
+    }
+  })
+
+  it('非法图片格式（如 BMP/SVG）被客户端及时拦截', async () => {
+    const bmpUrl = 'data:image/bmp;base64,Qk0AAAAAAAAAAAAAAA='
+    const res = await client.generate({
+      model: 'deepseek-flash',
+      systemPrompt: '助教模式',
+      userText: '分析题目',
+      imageDataUrl: bmpUrl,
+      onDelta: () => {}
+    })
+    expect(res.error).toContain('UNSUPPORTED: 图片格式必须是 JPEG/PNG/GIF/WebP')
+  })
+
+  it('所选纯文本模型（如 deepseek-chat）遇图片输入时精准拦截并提示切换 flash', async () => {
+    const pngUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
+    const res = await client.generate({
+      model: 'deepseek-chat',
+      systemPrompt: '助教模式',
+      userText: '分析题目',
+      imageDataUrl: pngUrl,
+      onDelta: () => {}
+    })
+    expect(res.error).toContain('UNSUPPORTED: 当前所选模型 deepseek-chat 不支持图片输入')
+    expect(res.error).toContain('deepseek-flash')
+  })
+
+  it('无图片的纯文本输入正常通过校验', async () => {
+    const res = await client.generate({
+      model: 'deepseek-chat',
+      systemPrompt: '助教模式',
+      userText: '操作系统中进程与线程的区别',
+      imageDataUrl: null,
+      onDelta: () => {}
+    })
+    // 纯文本输入不应触发任何视觉错误
+    expect(res.error).not.toContain('UNSUPPORTED')
   })
 })
