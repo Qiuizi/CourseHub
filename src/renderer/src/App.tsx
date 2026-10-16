@@ -314,6 +314,11 @@ export default function App(): JSX.Element {
           return
         }
 
+        if (!res.data.ok) {
+          setNotice(`获取章节目录失败: ${res.data.error ?? '平台返回异常'}`)
+          return
+        }
+
         const rawChapters = res.data.chapters || []
         // 筛选叶子任务节点（具有学习跳转链接）
         const taskNodes = rawChapters.filter((ch) => ch.taskUrl)

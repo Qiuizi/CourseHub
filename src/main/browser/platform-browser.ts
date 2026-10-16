@@ -380,7 +380,10 @@ export function testSession(): Electron.Session {
   return ses
 }
 
-/** 测试 fixture 目录。开发态在项目根，打包后随 asar 分发。 */
+/** 测试 fixture 目录。开发态在项目根，打包后随 extraResources 分发。 */
 export function fixturesDir(): string {
-  return path.join(app.getAppPath(), 'tests', 'fixtures')
+  if (app?.isPackaged) {
+    return path.join(process.resourcesPath, 'fixtures')
+  }
+  return path.join(app ? app.getAppPath() : process.cwd(), 'tests', 'fixtures')
 }

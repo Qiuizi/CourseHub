@@ -727,7 +727,7 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     const win = deps.getWindow()
     if (!win) throw new CodedError('INVALID_REQUEST', '主窗口不存在')
     // 定位测试只在本地 fixture 页面上运行，绝不指向生产平台 origin
-    const fixturePath = path.join(app.getAppPath(), 'tests', 'fixtures', 'geo-test.html')
+    const fixturePath = path.join(fixturesDir(), 'geo-test.html')
     const run = await deps.geo.start(win, c, pathToFileURL(fixturePath).href)
     return run
   })
