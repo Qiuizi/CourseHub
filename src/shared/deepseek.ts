@@ -33,7 +33,7 @@ export const KNOWN_MODELS: readonly AIModelInfo[] = [
     maxOutputTokens: 393216,
     inputModalities: ['text', 'image'],
     outputModalities: ['text'],
-    supportedReasoningEfforts: ['low', 'medium', 'high', 'max'],
+    supportedReasoningEfforts: ['low', 'high', 'max'],
     defaultReasoningEffort: null,
     raw: null
   },
@@ -44,7 +44,7 @@ export const KNOWN_MODELS: readonly AIModelInfo[] = [
     maxOutputTokens: 393216,
     inputModalities: ['text'],
     outputModalities: ['text'],
-    supportedReasoningEfforts: ['low', 'medium', 'high', 'max'],
+    supportedReasoningEfforts: ['low', 'high', 'max'],
     defaultReasoningEffort: null,
     raw: null
   }
@@ -105,7 +105,7 @@ export function parseModelsResponse(json: unknown): AIModelInfo[] {
       : ['text']
 
     // 解析支持的推理强度档位
-    // 官方 /models 响应只含 effort.supported_levels，无 default_level 字段
+    // 官方 /models 响应示例只含 effort.supported_levels（low / high / max），无 default_level 字段时保持 null
     let supportedReasoningEfforts: string[] | null = null
     let defaultReasoningEffort: string | null = null
     if (rec.effort && typeof rec.effort === 'object') {
@@ -113,7 +113,6 @@ export function parseModelsResponse(json: unknown): AIModelInfo[] {
       if (Array.isArray(eff.supported_levels)) {
         supportedReasoningEfforts = eff.supported_levels.filter((s): s is string => typeof s === 'string')
       }
-      // default_level 存在时读取，实际返回通常为 null/缺失
       if (typeof eff.default_level === 'string') {
         defaultReasoningEffort = eff.default_level
       }

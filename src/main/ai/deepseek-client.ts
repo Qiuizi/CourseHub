@@ -24,7 +24,11 @@ export class DeepSeekClient {
   constructor(private readonly store: Store) {}
 
   private async apiKey(): Promise<string | null> {
-    return this.store.getSecret('deepseek_api_key')
+    const fromStore = await this.store.getSecret('deepseek_api_key')
+    if (fromStore && fromStore.trim()) return fromStore.trim()
+    const fromEnv = process.env.DEEPSEEK_API_KEY
+    if (fromEnv && fromEnv.trim()) return fromEnv.trim()
+    return null
   }
 
   async listModels(): Promise<{ models: AIModelInfo[]; error: string | null }> {

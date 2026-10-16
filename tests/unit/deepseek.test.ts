@@ -29,7 +29,7 @@ import { DeepSeekClient } from '../../src/main/ai/deepseek-client'
 
 describe('parseModelsResponse', () => {
   it('解析官方 schema 字段（含多模态与推理强度，2026-10-16 实际值）', () => {
-    // 官方 /models 实际响应字段（max_output_tokens=393216，effort无default_level）
+    // 官方 /models 实际响应字段（max_output_tokens=393216，effort.supported_levels=['low','high','max']，默认 high）
     const json = {
       object: 'list',
       data: [
@@ -43,8 +43,8 @@ describe('parseModelsResponse', () => {
           input_modalities: ['text', 'image'],
           output_modalities: ['text'],
           effort: {
-            supported_levels: ['low', 'medium', 'high', 'max']
-            // 注意：官方响应无 default_level 字段
+            supported_levels: ['low', 'high', 'max']
+            // 注意：官方响应示例只含 supported_levels，缺省 default_level 时解析默认 high
           }
         },
         {
@@ -56,7 +56,7 @@ describe('parseModelsResponse', () => {
           input_modalities: ['text'],
           output_modalities: ['text'],
           effort: {
-            supported_levels: ['low', 'medium', 'high', 'max']
+            supported_levels: ['low', 'high', 'max']
           }
         }
       ]
@@ -69,13 +69,15 @@ describe('parseModelsResponse', () => {
     expect(models[0]!.contextWindow).toBe(1048576)
     expect(models[0]!.maxOutputTokens).toBe(393216)
     expect(models[0]!.displayName).toBe('DeepSeek Flash')
-    expect(models[0]!.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'max'])
-    // 官方响应无 default_level，解析结果应为 null
+    expect(models[0]!.supportedReasoningEfforts).toEqual(['low', 'high', 'max'])
+    expect(models[0]!.supportedReasoningEfforts).not.toContain('medium')
+    // 官方响应无 default_level 时，保持为 null（不强行补 high）
     expect(models[0]!.defaultReasoningEffort).toBeNull()
 
     expect(models[1]!.id).toBe('deepseek-v4-pro')
     expect(models[1]!.inputModalities).toEqual(['text'])
     expect(models[1]!.maxOutputTokens).toBe(393216)
+    expect(models[1]!.defaultReasoningEffort).toBeNull()
   })
 
   it('effort.default_level 存在时正确读取（兼容可能新增该字段的未来版本）', () => {
@@ -137,10 +139,12 @@ describe('模型能力选择与视觉判断', () => {
     // 服务端上限为 393216，不是 8192
     expect(flash.maxOutputTokens).toBe(393216)
     expect(pro.maxOutputTokens).toBe(393216)
-    // effort 级别包含 max
-    expect(flash.supportedReasoningEfforts).toContain('max')
-    expect(pro.supportedReasoningEfforts).toContain('max')
-    // 官方响应无 default_level
+    // 官方 effort.supported_levels 示例为 low / high / max，默认 high，不含 medium
+    expect(flash.supportedReasoningEfforts).toEqual(['low', 'high', 'max'])
+    expect(flash.supportedReasoningEfforts).not.toContain('medium')
+    expect(pro.supportedReasoningEfforts).toEqual(['low', 'high', 'max'])
+    expect(pro.supportedReasoningEfforts).not.toContain('medium')
+    // 官方响应无 default_level 字段，保持为 null，不强行补 high
     expect(flash.defaultReasoningEffort).toBeNull()
     expect(pro.defaultReasoningEffort).toBeNull()
   })

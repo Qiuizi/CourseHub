@@ -201,13 +201,18 @@ export function SettingsScene({
         }
       >
         {modelSource === 'offline' && (
-          <div style={{ marginBottom: 10 }}>
+          <div style={{ marginBottom: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
             <Notice tone="warn">
               当前显示的是<strong>离线参考模型</strong>（未经 /models 在线验证）。保存有效 API Key 后点击「测试连接 / 刷新模型」以获取实际可用模型。
             </Notice>
+            {modelError && (
+              <Notice tone="error">
+                <strong>连接未通过：</strong>{modelError}
+              </Notice>
+            )}
           </div>
         )}
-        {modelError && modelSource !== 'offline' && (
+        {modelError && modelSource === 'online' && (
           <div style={{ marginBottom: 10 }}>
             <Notice tone="error">{modelError}</Notice>
           </div>
@@ -240,6 +245,7 @@ export function SettingsScene({
                     {m.contextWindow && ` · ${Math.round(m.contextWindow / 1024)}k 上下文`}
                     {m.maxOutputTokens && ` · 最大输出 ${Math.round(m.maxOutputTokens / 1024)}k tokens`}
                     {m.supportedReasoningEfforts && m.supportedReasoningEfforts.length > 0 && ` · 推理档位 [${m.supportedReasoningEfforts.join('/')}]`}
+                    {m.defaultReasoningEffort && `（默认 ${m.defaultReasoningEffort}）`}
                   </div>
                 </div>
                 <span style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>

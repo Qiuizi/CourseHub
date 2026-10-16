@@ -271,14 +271,14 @@ export function AiScene({
             {models.length > 0 ? (
               <select
                 className="field"
-                style={{ padding: '3px 10px', fontSize: 12, minWidth: 200, height: 30 }}
+                style={{ padding: '3px 10px', fontSize: 12, minWidth: 220, height: 30 }}
                 value={selectedModelId}
                 onChange={(e) => setSelectedModelId(e.target.value)}
                 data-testid="ai-model-select"
               >
                 {models.map((m) => (
                   <option key={m.id} value={m.id}>
-                    {m.displayName ? `${m.displayName} (${m.id})` : m.id} {modelSupportsImage(m) ? '📸 视觉' : '📝 纯文本'}
+                    {modelError ? ' [离线参考] ' : ''}{m.displayName ? `${m.displayName} (${m.id})` : m.id} {modelSupportsImage(m) ? '📸 视觉' : '📝 纯文本'}
                   </option>
                 ))}
               </select>
@@ -292,6 +292,16 @@ export function AiScene({
               </span>
             )}
 
+            {modelError ? (
+              <span className="chip chip-neutral" data-testid="ai-model-status" title={modelError} style={{ fontSize: 11 }}>
+                ⚠️ 离线参考模型
+              </span>
+            ) : models.length > 0 ? (
+              <span className="chip chip-emerald" data-testid="ai-model-status" style={{ fontSize: 11 }}>
+                在线已验证
+              </span>
+            ) : null}
+
             {currentModel?.contextWindow && (
               <span className="chip" style={{ fontSize: 11, opacity: 0.8 }}>
                 上下文: {Math.round(currentModel.contextWindow / 1024)}k
@@ -299,7 +309,7 @@ export function AiScene({
             )}
 
             {modelError && (
-              <span style={{ fontSize: 11, color: '#b91c1c' }}>{modelError}</span>
+              <span style={{ fontSize: 11, color: 'var(--ch-text-2)' }}>（{modelError}）</span>
             )}
           </div>
 

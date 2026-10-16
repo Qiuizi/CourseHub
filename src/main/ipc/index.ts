@@ -990,7 +990,9 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
       explanation: string
     }> = []
 
-    const hasKey = (await deps.store.getSecret('deepseek_api_key')) !== null
+    const hasKey =
+      (await deps.store.getSecret('deepseek_api_key')) !== null ||
+      Boolean(process.env.DEEPSEEK_API_KEY && process.env.DEEPSEEK_API_KEY.trim())
 
     for (const q of toProcess) {
       let suggestedKeys: string[] = []
