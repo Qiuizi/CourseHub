@@ -15,7 +15,7 @@ import {
   FileDown
 } from 'lucide-react'
 import { Card, Notice, Rows, Seg, Switch, CapChip, Empty } from '../components/ui'
-import { isRetiredAlias, KNOWN_MODELS } from '@shared/deepseek'
+import { isRetiredAlias, KNOWN_MODELS, LEGACY_REFERENCE_MODELS } from '@shared/deepseek'
 import type { AIModelInfo } from '@shared/types'
 
 export interface SettingsSceneProps {
@@ -47,6 +47,8 @@ export function SettingsScene({
   const [notifications, setNotifications] = useState(true)
   const [diag, setDiag] = useState<string | null>(null)
 
+  const [modelSource, setModelSource] = useState<'online' | 'offline' | null>(null)
+
   const refreshModels = useCallback(async () => {
     setLoadingModels(true)
     setModelError(null)
@@ -54,9 +56,13 @@ export function SettingsScene({
       const r = await window.coursehub.ai.models()
       if (r.ok) {
         setModels(r.data.models)
-        setModelError(r.data.error)
+        const err = r.data.error
+        setModelError(err)
+        // 有 error 时模型列表是离线兜底；无 error 则为在线验证
+        setModelSource(err ? 'offline' : 'online')
       } else {
         setModelError(`${r.error.code}: ${r.error.message}`)
+        setModelSource('offline')
       }
     } finally {
       setLoadingModels(false)
@@ -194,7 +200,14 @@ export function SettingsScene({
           </button>
         }
       >
-        {modelError && (
+        {modelSource === 'offline' && (
+          <div style={{ marginBottom: 10 }}>
+            <Notice tone="warn">
+              当前显示的是<strong>离线参考模型</strong>（未经 /models 在线验证）。保存有效 API Key 后点击「测试连接 / 刷新模型」以获取实际可用模型。
+            </Notice>
+          </div>
+        )}
+        {modelError && modelSource !== 'offline' && (
           <div style={{ marginBottom: 10 }}>
             <Notice tone="error">{modelError}</Notice>
           </div>
@@ -225,16 +238,19 @@ export function SettingsScene({
                   <div style={{ fontSize: 11, fontFamily: 'ui-monospace, Consolas, monospace', color: 'var(--ch-text-2)' }}>
                     {m.id}
                     {m.contextWindow && ` · ${Math.round(m.contextWindow / 1024)}k 上下文`}
+                    {m.maxOutputTokens && ` · 最大输出 ${Math.round(m.maxOutputTokens / 1024)}k tokens`}
                     {m.supportedReasoningEfforts && m.supportedReasoningEfforts.length > 0 && ` · 推理档位 [${m.supportedReasoningEfforts.join('/')}]`}
                   </div>
                 </div>
-                <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <span style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                   {m.inputModalities.includes('image') || m.id === 'deepseek-flash' ? (
                     <span className="chip chip-emerald">📸 支持图片理解</span>
                   ) : (
                     <span className="chip">📝 仅纯文本</span>
                   )}
                   {m.id === 'deepseek-flash' && <span className="chip chip-tint">默认推荐</span>}
+                  {modelSource === 'offline' && <span className="chip chip-neutral">离线参考</span>}
+                  {modelSource === 'online' && <span className="chip chip-emerald" style={{ fontSize: 10 }}>在线已验证</span>}
                   {isRetiredAlias(m.id) && <span className="chip chip-neutral">legacy 别名</span>}
                 </span>
               </li>
@@ -245,9 +261,11 @@ export function SettingsScene({
         {advanced && (
           <div style={{ marginTop: 12 }}>
             <Notice tone="info">
-              DeepSeek 官方多模态视觉模型为 <code>deepseek-flash</code>，支持文本及图像输入（JPEG / PNG / GIF / WebP），上下文最大达 1M tokens。
+              DeepSeek 官方多模态视觉模型为 <code>deepseek-flash</code>，支持文本及图像输入（JPEG / PNG / GIF / WebP），上下文最大达 1M tokens，服务端最大输出 393,216 tokens（CourseHub 请求默认使用 2000）。
               <br />
-              通用纯文本模型为 <code>deepseek-chat</code>，深度推理模型为 <code>deepseek-reasoner</code>。
+              <code>deepseek-v4-pro</code> 为旗舰纯文本推理模型，同等上下文与输出上限。
+              <br />
+              <code>deepseek-chat</code>、<code>deepseek-reasoner</code> 为旧版遗留模型，当前 /models 不再列出。
               CourseHub 默认优先选用 <code>deepseek-flash</code> 并在上方界面支持自由切换。
             </Notice>
             <div style={{ marginTop: 10 }}>
@@ -321,15 +339,25 @@ export function SettingsScene({
         </p>
       </Card>
 
-      <Card title="已知参考模型（离线兜底）">
-        <p style={{ fontSize: 11, color: 'var(--ch-text-2)', margin: 0, lineHeight: 1.7 }}>
-          无网络时可参考的内置清单：
+      <Card title="离线参考模型（未配置 Key 时的内置兜底）">
+        <p style={{ fontSize: 11, color: 'var(--ch-text-2)', margin: '0 0 8px', lineHeight: 1.7 }}>
+          <strong>当前已知在线模型（/models 核对 2026-10-16）：</strong>
           {KNOWN_MODELS.map((m) => (
             <span key={m.id} className="chip chip-neutral" style={{ marginLeft: 6 }}>
               {m.id}
             </span>
           ))}
-          。实际能力以在线 <code>/models</code> 元数据为准。
+        </p>
+        <p style={{ fontSize: 11, color: 'var(--ch-text-2)', margin: 0, lineHeight: 1.7 }}>
+          <strong>旧版遗留模型（不再出现在 /models，不可当当前模型使用）：</strong>
+          {LEGACY_REFERENCE_MODELS.map((m) => (
+            <span key={m.id} className="chip" style={{ marginLeft: 6, opacity: 0.6 }}>
+              {m.id}
+            </span>
+          ))}
+        </p>
+        <p style={{ fontSize: 10.5, color: 'var(--ch-text-3)', margin: '8px 0 0', lineHeight: 1.6 }}>
+          实际模型能力与可用性以在线 <code>/models</code> 元数据为准。离线清单仅供参考，不能作为已验证在线能力的依据。
         </p>
       </Card>
     </div>

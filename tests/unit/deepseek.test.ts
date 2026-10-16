@@ -1,9 +1,14 @@
 /**
  * DeepSeek 模型解析、脱敏与 JSON 容错测试。
  *
- * 模型 ID 用例基于 2026-10-15 官方文档核对结果：
- * deepseek-flash（支持图片）/ deepseek-v4-pro；
+ * 模型 ID 用例基于 2026-10-16 官方文档核对结果：
+ * deepseek-flash（支持图片）/ deepseek-v4-pro 为当前 /models 实际返回的模型；
+ * deepseek-chat / deepseek-reasoner 已从 /models 移除（旧版遗留）；
  * deepseek-v4-flash 等为已退役 legacy 别名。
+ *
+ * 官方 /models 响应关键字段（2026-10-16）：
+ * - max_output_tokens: 393216（服务端上限，不是 8192）
+ * - effort.supported_levels: ['low', 'medium', 'high', 'max']（无 default_level）
  */
 
 import { describe, it, expect } from 'vitest'
@@ -17,12 +22,14 @@ import {
   redactForOutbound,
   extractJson,
   RETIRED_MODEL_ALIASES,
-  KNOWN_MODELS
+  KNOWN_MODELS,
+  LEGACY_REFERENCE_MODELS
 } from '@shared/deepseek'
 import { DeepSeekClient } from '../../src/main/ai/deepseek-client'
 
 describe('parseModelsResponse', () => {
-  it('解析官方 schema 字段（含多模态与推理强度）', () => {
+  it('解析官方 schema 字段（含多模态与推理强度，2026-10-16 实际值）', () => {
+    // 官方 /models 实际响应字段（max_output_tokens=393216，effort无default_level）
     const json = {
       object: 'list',
       data: [
@@ -32,12 +39,12 @@ describe('parseModelsResponse', () => {
           owned_by: 'deepseek',
           name: 'DeepSeek Flash',
           context_window: 1048576,
-          max_output_tokens: 8192,
+          max_output_tokens: 393216,
           input_modalities: ['text', 'image'],
           output_modalities: ['text'],
           effort: {
-            supported_levels: ['low', 'medium', 'high'],
-            default_level: 'medium'
+            supported_levels: ['low', 'medium', 'high', 'max']
+            // 注意：官方响应无 default_level 字段
           }
         },
         {
@@ -45,9 +52,12 @@ describe('parseModelsResponse', () => {
           object: 'model',
           name: 'DeepSeek V4 Pro',
           context_window: 1048576,
-          max_output_tokens: 8192,
+          max_output_tokens: 393216,
           input_modalities: ['text'],
-          output_modalities: ['text']
+          output_modalities: ['text'],
+          effort: {
+            supported_levels: ['low', 'medium', 'high', 'max']
+          }
         }
       ]
     }
@@ -57,12 +67,27 @@ describe('parseModelsResponse', () => {
     expect(models[0]!.id).toBe('deepseek-flash')
     expect(models[0]!.inputModalities).toEqual(['text', 'image'])
     expect(models[0]!.contextWindow).toBe(1048576)
+    expect(models[0]!.maxOutputTokens).toBe(393216)
     expect(models[0]!.displayName).toBe('DeepSeek Flash')
-    expect(models[0]!.supportedReasoningEfforts).toEqual(['low', 'medium', 'high'])
-    expect(models[0]!.defaultReasoningEffort).toBe('medium')
+    expect(models[0]!.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'max'])
+    // 官方响应无 default_level，解析结果应为 null
+    expect(models[0]!.defaultReasoningEffort).toBeNull()
 
     expect(models[1]!.id).toBe('deepseek-v4-pro')
     expect(models[1]!.inputModalities).toEqual(['text'])
+    expect(models[1]!.maxOutputTokens).toBe(393216)
+  })
+
+  it('effort.default_level 存在时正确读取（兼容可能新增该字段的未来版本）', () => {
+    const json = {
+      data: [{
+        id: 'deepseek-flash',
+        input_modalities: ['text', 'image'],
+        effort: { supported_levels: ['low', 'high'], default_level: 'high' }
+      }]
+    }
+    const models = parseModelsResponse(json)
+    expect(models[0]!.defaultReasoningEffort).toBe('high')
   })
 
   it('缺失字段填 null 而非默认值（常规非 flash 模型）', () => {
@@ -106,11 +131,28 @@ describe('模型能力选择与视觉判断', () => {
     expect(pickDefaultModel(KNOWN_MODELS)?.id).toBe('deepseek-flash')
   })
 
-  it('deepseek-chat 与 deepseek-reasoner 为官方纯文本模型，不假定图片能力', () => {
-    const chat = KNOWN_MODELS.find((m) => m.id === 'deepseek-chat')!
-    const reasoner = KNOWN_MODELS.find((m) => m.id === 'deepseek-reasoner')!
-    expect(modelSupportsImage(chat)).toBe(false)
-    expect(modelSupportsImage(reasoner)).toBe(false)
+  it('KNOWN_MODELS 元数据正确（2026-10-16 核对值）', () => {
+    const flash = KNOWN_MODELS.find((m) => m.id === 'deepseek-flash')!
+    const pro = KNOWN_MODELS.find((m) => m.id === 'deepseek-v4-pro')!
+    // 服务端上限为 393216，不是 8192
+    expect(flash.maxOutputTokens).toBe(393216)
+    expect(pro.maxOutputTokens).toBe(393216)
+    // effort 级别包含 max
+    expect(flash.supportedReasoningEfforts).toContain('max')
+    expect(pro.supportedReasoningEfforts).toContain('max')
+    // 官方响应无 default_level
+    expect(flash.defaultReasoningEffort).toBeNull()
+    expect(pro.defaultReasoningEffort).toBeNull()
+  })
+
+  it('KNOWN_MODELS 只含当前 /models 返回的在线模型（不含遗留的 deepseek-chat/reasoner）', () => {
+    expect(KNOWN_MODELS.length).toBe(2)
+    expect(KNOWN_MODELS.map((m) => m.id)).toEqual(['deepseek-flash', 'deepseek-v4-pro'])
+    // chat/reasoner 在 LEGACY_REFERENCE_MODELS 中，不在 KNOWN_MODELS
+    expect(KNOWN_MODELS.find((m) => m.id === 'deepseek-chat')).toBeUndefined()
+    expect(KNOWN_MODELS.find((m) => m.id === 'deepseek-reasoner')).toBeUndefined()
+    expect(LEGACY_REFERENCE_MODELS.map((m) => m.id)).toContain('deepseek-chat')
+    expect(LEGACY_REFERENCE_MODELS.map((m) => m.id)).toContain('deepseek-reasoner')
   })
 
   it('具有 image 模态的模型均能被识别为视觉模型', () => {

@@ -1,13 +1,15 @@
 /**
  * DeepSeek 模型能力判定。
  *
- * 事实核对（2026-10-15，官方文档）：
+ * 事实核对（2026-10-16，官方文档）：
  * - 官方 base_url: https://api.deepseek.com
- * - 当前模型: `deepseek-flash`、`deepseek-v4-pro`
- * - `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp` 是**已退役的 legacy 别名**，
- *   请求仍被接受但由 DeepSeek-V4.1-Flash 服务并按 Flash 价计费。
- * - `deepseek-flash` 支持图片输入（JPEG/PNG/GIF/WebP）。
- * - 图片只能出现在 user 消息中，放在 system/assistant 会返回 400。
+ * - 当前在线模型（/models 实际返回）: `deepseek-flash`、`deepseek-v4-pro`
+ *   - 均已从 8192 升至 393216 max_output_tokens（官方示例值）
+ *   - effort.supported_levels 为 ['low', 'medium', 'high', 'max']，响应中无 default_level
+ * - `deepseek-chat` / `deepseek-reasoner` 为旧版遗留模型，当前 /models 已不再列出
+ * - `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp` 是**已退役的 legacy 别名**
+ * - `deepseek-flash` 支持图片输入（JPEG/PNG/GIF/WebP）
+ * - 图片只能出现在 user 消息中，放在 system/assistant 会返回 400
  *
  * 因此本模块一律以 /models 返回的 input_modalities 为准，
  * 不把「某个模型名看起来像多模态」当作能力证据。
@@ -17,48 +19,44 @@ import type { AIModelInfo, AIModelModality } from './types'
 
 export const DEEPSEEK_BASE_URL = 'https://api.deepseek.com'
 
-/** 官方文档实际列出的最新模型。deepseek-flash 原生支持图像与文本，deepseek-v4-pro 为旗舰推理模型。 */
+/**
+ * 官方 /models 当前实际返回的模型（2026-10-16 核对）。
+ * maxOutputTokens 为服务端能力上限（393216），CourseHub 请求时仍默认使用 max_tokens=2000。
+ * effort.supported_levels 为 ['low', 'medium', 'high', 'max']；官方响应中无 default_level 字段。
+ * deepseek-flash 原生支持图像与文本；deepseek-v4-pro 为旗舰推理模型（纯文本）。
+ */
 export const KNOWN_MODELS: readonly AIModelInfo[] = [
   {
     id: 'deepseek-flash',
     displayName: 'DeepSeek Flash (多模态视觉)',
     contextWindow: 1048576,
-    maxOutputTokens: 8192,
+    maxOutputTokens: 393216,
     inputModalities: ['text', 'image'],
     outputModalities: ['text'],
-    supportedReasoningEfforts: ['low', 'medium', 'high'],
-    defaultReasoningEffort: 'medium',
+    supportedReasoningEfforts: ['low', 'medium', 'high', 'max'],
+    defaultReasoningEffort: null,
     raw: null
   },
   {
     id: 'deepseek-v4-pro',
     displayName: 'DeepSeek V4 Pro',
     contextWindow: 1048576,
-    maxOutputTokens: 8192,
+    maxOutputTokens: 393216,
     inputModalities: ['text'],
     outputModalities: ['text'],
-    supportedReasoningEfforts: ['low', 'medium', 'high'],
-    defaultReasoningEffort: 'medium',
-    raw: null
-  },
-  {
-    id: 'deepseek-chat',
-    displayName: 'DeepSeek Chat (V3 通用文本)',
-    contextWindow: 65536,
-    maxOutputTokens: 8192,
-    inputModalities: ['text'],
-    outputModalities: ['text'],
-    raw: null
-  },
-  {
-    id: 'deepseek-reasoner',
-    displayName: 'DeepSeek Reasoner (R1 深度推理)',
-    contextWindow: 65536,
-    maxOutputTokens: 8192,
-    inputModalities: ['text'],
-    outputModalities: ['text'],
+    supportedReasoningEfforts: ['low', 'medium', 'high', 'max'],
+    defaultReasoningEffort: null,
     raw: null
   }
+]
+
+/**
+ * 旧版遗留模型，不再出现在 /models 实际响应中。
+ * 仅用于用户侧识别或展示"历史参考"，不能作为当前可调用模型使用。
+ */
+export const LEGACY_REFERENCE_MODELS: readonly Pick<AIModelInfo, 'id' | 'displayName'>[] = [
+  { id: 'deepseek-chat', displayName: 'DeepSeek Chat V3（已从 /models 移除）' },
+  { id: 'deepseek-reasoner', displayName: 'DeepSeek Reasoner R1（已从 /models 移除）' }
 ]
 
 export const RETIRED_MODEL_ALIASES: readonly string[] = [
@@ -107,6 +105,7 @@ export function parseModelsResponse(json: unknown): AIModelInfo[] {
       : ['text']
 
     // 解析支持的推理强度档位
+    // 官方 /models 响应只含 effort.supported_levels，无 default_level 字段
     let supportedReasoningEfforts: string[] | null = null
     let defaultReasoningEffort: string | null = null
     if (rec.effort && typeof rec.effort === 'object') {
@@ -114,6 +113,7 @@ export function parseModelsResponse(json: unknown): AIModelInfo[] {
       if (Array.isArray(eff.supported_levels)) {
         supportedReasoningEfforts = eff.supported_levels.filter((s): s is string => typeof s === 'string')
       }
+      // default_level 存在时读取，实际返回通常为 null/缺失
       if (typeof eff.default_level === 'string') {
         defaultReasoningEffort = eff.default_level
       }
