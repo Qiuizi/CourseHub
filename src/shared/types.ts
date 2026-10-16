@@ -50,7 +50,7 @@ export interface Course {
   fetchedAt: string
 }
 
-export type TaskType = 'video' | 'doc' | 'quiz' | 'unknown'
+export type TaskType = 'video' | 'doc' | 'quiz' | 'other' | 'unknown'
 export type ChapterTaskStatus = 'completed' | 'in_progress' | 'not_started' | 'unknown'
 
 export interface ChapterNode {

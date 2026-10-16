@@ -624,18 +624,25 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px;
+  padding: 10px 12px;
   border-radius: var(--r-block);
-  border: 1px solid transparent;
+  border: 1px solid var(--ch-hairline);
   background: var(--ch-subtle);
   color: var(--ch-text-2);
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
-.chapter-item.active {
-  background: color-mix(in srgb, var(--ch-accent-tint) 60%, transparent);
-  border-color: color-mix(in srgb, var(--ch-accent) 30%, transparent);
+.chapter-item:hover {
+  background: var(--ch-surface);
+  color: var(--ch-text);
+}
+
+.chapter-item.active,
+.chapter-item[aria-current='true'] {
+  background: color-mix(in srgb, var(--ch-accent-tint) 70%, transparent);
+  border-color: color-mix(in srgb, var(--ch-accent) 45%, transparent);
   color: var(--ch-accent);
+  box-shadow: var(--sh-2xs);
 }
 
 /* 题目选项按钮（原型：p-3.5 rounded-2xl border） */

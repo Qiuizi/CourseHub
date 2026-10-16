@@ -9,7 +9,8 @@ import {
   fetchChaoxingChapters,
   buildActiveListRequest,
   parseActiveListResponse,
-  classifyChaoxingActivityType
+  classifyChaoxingActivityType,
+  classifyChaoxingTaskType
 } from '../../src/main/adapters/chaoxing'
 import {
   buildYktCourseListRequest,
@@ -317,6 +318,31 @@ describe('ChaoxingAdapter 解析与请求构造', () => {
     expect(t3.title).toBe('1.3 拓展阅读文档')
     expect(t3.taskType).toBe('doc')
     expect(t3.status).toBe('not_started')
+  })
+
+  it('classifyChaoxingTaskType 精准识别文档、测验、其他任务与视频', () => {
+    // 文档任务
+    expect(classifyChaoxingTaskType('', '3.4 玩转图书馆文档版')).toBe('doc')
+    expect(classifyChaoxingTaskType('<i class="icon-wendang"></i>', '第一节')).toBe('doc')
+    expect(classifyChaoxingTaskType('', '课程课件PDF')).toBe('doc')
+    expect(classifyChaoxingTaskType('', '阅读材料 (word)')).toBe('doc')
+
+    // 测验任务
+    expect(classifyChaoxingTaskType('', '2.3 通关小测验一')).toBe('quiz')
+    expect(classifyChaoxingTaskType('<i class="icon-ceshi"></i>', '阶段性考核')).toBe('quiz')
+    expect(classifyChaoxingTaskType('', '第一章 作业')).toBe('quiz')
+    expect(classifyChaoxingTaskType('', '期末考试')).toBe('quiz')
+
+    // 其他任务
+    expect(classifyChaoxingTaskType('', '6.1 联系我们')).toBe('other')
+    expect(classifyChaoxingTaskType('', '6.2 智能咨询')).toBe('other')
+    expect(classifyChaoxingTaskType('', '课堂互动讨论')).toBe('other')
+    expect(classifyChaoxingTaskType('', '在线直播')).toBe('other')
+
+    // 视频任务
+    expect(classifyChaoxingTaskType('', '3.1 实体图书馆使用指南')).toBe('video')
+    expect(classifyChaoxingTaskType('<i class="icon-shipin"></i>', '第三章 专题讲解')).toBe('video')
+    expect(classifyChaoxingTaskType('', '1.1 军事科学概述')).toBe('video')
   })
 
   it('parseMooc2ChapterListResponse 遇到 nodata 或空页面时返回空数组', () => {

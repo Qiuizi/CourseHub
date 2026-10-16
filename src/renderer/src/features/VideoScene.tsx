@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import type { ReactNode } from 'react'
 import {
   Play,
@@ -5,14 +6,16 @@ import {
   Volume2,
   VolumeX,
   CheckCircle2,
-  Clock,
   SkipForward,
   Square,
   Loader2,
   Film,
-  AlertTriangle
+  AlertTriangle,
+  FileText,
+  HelpCircle,
+  Layers
 } from 'lucide-react'
-import type { PlaybackObservation } from '@shared/types'
+import type { PlaybackObservation, TaskType } from '@shared/types'
 import { observedProgressPercent, ALLOWED_PLAYBACK_RATES } from '@shared/video'
 import { Card, CapChip, Notice, Rows } from '../components/ui'
 
@@ -24,7 +27,7 @@ export interface ChapterTask {
   durationSeconds: number | null
   platformStatus: 'unknown' | 'not_started' | 'in_progress' | 'completed'
   sourceUrl?: string
-  taskType?: string
+  taskType?: TaskType | string
 }
 
 function fmtDuration(sec: number | null): string {
@@ -50,6 +53,7 @@ export function VideoScene({
   tasks,
   activeTaskId,
   continuous,
+  onContinuousChange,
   autoMute,
   volume,
   rate,
@@ -70,6 +74,7 @@ export function VideoScene({
   tasks: ChapterTask[]
   activeTaskId: string | null
   continuous: boolean
+  onContinuousChange?: (v: boolean) => void
   autoMute: boolean
   volume: number
   rate: number
@@ -86,6 +91,14 @@ export function VideoScene({
   const pct = observedProgressPercent(observation)
   const isPlaying = observation?.playerState === 'playing'
   const currentTask = tasks.find((t) => t.id === activeTaskId)
+
+  useEffect(() => {
+    if (!activeTaskId) return
+    const el = document.querySelector(`[data-task="${activeTaskId}"]`)
+    if (el) {
+      el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    }
+  }, [activeTaskId])
 
   return (
     <div style={{ maxWidth: 1120, margin: '0 auto' }}>
@@ -130,19 +143,49 @@ export function VideoScene({
                 >
                   {courseName ?? `${platformName} · 未选择课程`}
                 </span>
-                <h3
-                  style={{
-                    fontSize: 14,
-                    fontWeight: 500,
-                    margin: '8px 0 0',
-                    color: 'rgb(255 255 255 / 0.95)',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap'
-                  }}
-                >
-                  {chapterName ?? '尚未打开视频任务'}
-                </h3>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                  <h3
+                    style={{
+                      fontSize: 14,
+                      fontWeight: 500,
+                      margin: 0,
+                      color: 'rgb(255 255 255 / 0.95)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    {chapterName ?? '尚未打开视频任务'}
+                  </h3>
+                  {currentTask?.taskType && (
+                    <span
+                      style={{
+                        padding: '2px 8px',
+                        borderRadius: 999,
+                        fontSize: 10,
+                        fontWeight: 600,
+                        background:
+                          currentTask.taskType === 'doc'
+                            ? 'rgb(56 189 248 / 0.3)'
+                            : currentTask.taskType === 'quiz'
+                              ? 'rgb(251 191 36 / 0.3)'
+                              : currentTask.taskType === 'other'
+                                ? 'rgb(148 163 184 / 0.3)'
+                                : 'rgb(99 102 241 / 0.3)',
+                        color: '#fff',
+                        backdropFilter: 'blur(8px)'
+                      }}
+                    >
+                      {currentTask.taskType === 'doc'
+                        ? '在线文档'
+                        : currentTask.taskType === 'quiz'
+                          ? '章节测验'
+                          : currentTask.taskType === 'other'
+                            ? '拓展任务'
+                            : '视频任务'}
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -178,10 +221,22 @@ export function VideoScene({
                 <span style={{ color: 'rgb(255 255 255 / 0.8)' }}>
                   {observation
                     ? `${fmtDuration(observation.currentTimeSeconds)} / ${fmtDuration(observation.durationSeconds)}`
-                    : '播放器未观测'}
+                    : currentTask?.taskType === 'doc'
+                      ? '在线课件阅读'
+                      : currentTask?.taskType === 'quiz'
+                        ? '章节测验答题'
+                        : currentTask?.taskType === 'other'
+                          ? '其他任务拓展'
+                          : busy === 'play'
+                            ? '正在连接媒体流...'
+                            : '播放器待起播'}
                 </span>
                 <span style={{ color: 'rgb(255 255 255 / 0.8)' }}>
-                  本地观测进度 {pct === null ? '—' : `${pct.toFixed(1)}%`}
+                  {currentTask?.taskType === 'doc'
+                    ? '文档任务无需媒体进度'
+                    : currentTask?.taskType === 'quiz'
+                      ? '测验任务无需媒体进度'
+                      : `本地观测进度 ${pct === null ? '—' : `${pct.toFixed(1)}%`}`}
                 </span>
               </div>
             </div>
@@ -201,81 +256,134 @@ export function VideoScene({
               border: '1px solid var(--ch-border)'
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <button
-                type="button"
-                className="btn btn-primary"
-                style={{ width: 40, height: 40, padding: 0, borderRadius: 999 }}
-                onClick={() => onCommand(isPlaying ? 'pause' : 'play')}
-                disabled={busy !== null}
-                title={isPlaying ? '暂停' : '播放'}
-                data-testid="btn-play"
+            {currentTask?.taskType === 'doc' || currentTask?.taskType === 'quiz' || currentTask?.taskType === 'other' ? (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  width: '100%',
+                  gap: 12
+                }}
               >
-                {busy === 'play' || busy === 'pause' ? (
-                  <Loader2 size={16} className="spin" />
-                ) : isPlaying ? (
-                  <Pause size={16} />
-                ) : (
-                  <Play size={16} style={{ marginLeft: 2 }} />
-                )}
-              </button>
-
-              <button
-                type="button"
-                className="icon-btn plain"
-                onClick={() => onCommand(autoMute ? 'unmute' : 'mute')}
-                disabled={busy !== null}
-                title={autoMute ? '取消静音' : '静音'}
-              >
-                {autoMute ? <VolumeX size={15} /> : <Volume2 size={15} />}
-              </button>
-
-              <span style={{ fontSize: 11, color: 'var(--ch-text-2)', minWidth: 52 }}>
-                {autoMute ? '已静音' : '声音开启'}
-              </span>
-            </div>
-
-            {/* 音量 */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <label style={{ fontSize: 11, color: 'var(--ch-text-2)' }}>音量</label>
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.05}
-                value={volume}
-                onChange={(e) => onVolumeChange(Number(e.target.value))}
-                style={{ width: 90, accentColor: 'var(--ch-accent)' }}
-                aria-label="音量"
-              />
-              <button
-                type="button"
-                className="btn"
-                onClick={() => onCommand('setVolume', volume)}
-                disabled={busy !== null}
-              >
-                应用
-              </button>
-            </div>
-
-            {/* 倍速：平台白名单 */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontSize: 11, color: 'var(--ch-text-2)', marginRight: 2 }}>倍速</span>
-              <div className="scene-nav" style={{ background: 'var(--ch-page)' }}>
-                {ALLOWED_PLAYBACK_RATES.map((r) => (
-                  <button
-                    key={r}
-                    type="button"
-                    className="scene-pill"
-                    aria-current={rate === r}
-                    onClick={() => onRateChange(r)}
-                    style={rate === r ? { background: 'var(--ch-accent)', color: 'var(--ch-on-accent)' } : undefined}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                  <span
+                    className={`chip ${
+                      currentTask.taskType === 'doc'
+                        ? 'chip-tint'
+                        : currentTask.taskType === 'quiz'
+                          ? 'chip-warning'
+                          : 'chip-neutral'
+                    }`}
                   >
-                    {r}x
-                  </button>
-                ))}
+                    {currentTask.taskType === 'doc'
+                      ? '文档任务'
+                      : currentTask.taskType === 'quiz'
+                        ? '测验任务'
+                        : '拓展任务'}
+                  </span>
+                  <span style={{ fontSize: 11.5, color: 'var(--ch-text-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {currentTask.taskType === 'doc'
+                      ? '当前章节为在线文档或课件，请直接在上方内置视图中阅读，无需使用媒体控制条。'
+                      : currentTask.taskType === 'quiz'
+                        ? '当前章节为测验或作业，请在内置视图中作答，可展开右侧 AI 助手辅助分析。'
+                        : '当前章节为其他拓展任务，请直接在内置视图中查看。'}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => {
+                    const idx = tasks.findIndex((t) => t.id === activeTaskId)
+                    const next = tasks[idx + 1]
+                    if (next) onSelectTask(next.id)
+                  }}
+                  disabled={!tasks.some((_, i) => i === tasks.findIndex((t) => t.id === activeTaskId) + 1)}
+                  title="下一任务"
+                >
+                  <SkipForward size={13} />
+                  下一任务
+                </button>
               </div>
-            </div>
+            ) : (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    style={{ width: 40, height: 40, padding: 0, borderRadius: 999 }}
+                    onClick={() => onCommand(isPlaying ? 'pause' : 'play')}
+                    disabled={busy !== null}
+                    title={isPlaying ? '暂停' : '播放'}
+                    data-testid="btn-play"
+                  >
+                    {busy === 'play' || busy === 'pause' ? (
+                      <Loader2 size={16} className="spin" />
+                    ) : isPlaying ? (
+                      <Pause size={16} />
+                    ) : (
+                      <Play size={16} style={{ marginLeft: 2 }} />
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    className="icon-btn plain"
+                    onClick={() => onCommand(autoMute ? 'unmute' : 'mute')}
+                    disabled={busy !== null}
+                    title={autoMute ? '取消静音' : '静音'}
+                  >
+                    {autoMute ? <VolumeX size={15} /> : <Volume2 size={15} />}
+                  </button>
+
+                  <span style={{ fontSize: 11, color: 'var(--ch-text-2)', minWidth: 52 }}>
+                    {autoMute ? '已静音' : '声音开启'}
+                  </span>
+                </div>
+
+                {/* 音量 */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <label style={{ fontSize: 11, color: 'var(--ch-text-2)' }}>音量</label>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={volume}
+                    onChange={(e) => onVolumeChange(Number(e.target.value))}
+                    style={{ width: 90, accentColor: 'var(--ch-accent)' }}
+                    aria-label="音量"
+                  />
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => onCommand('setVolume', volume)}
+                    disabled={busy !== null}
+                  >
+                    应用
+                  </button>
+                </div>
+
+                {/* 倍速：平台白名单 */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 11, color: 'var(--ch-text-2)', marginRight: 2 }}>倍速</span>
+                  <div className="scene-nav" style={{ background: 'var(--ch-page)' }}>
+                    {ALLOWED_PLAYBACK_RATES.map((r) => (
+                      <button
+                        key={r}
+                        type="button"
+                        className="scene-pill"
+                        aria-current={rate === r}
+                        onClick={() => onRateChange(r)}
+                        style={rate === r ? { background: 'var(--ch-accent)', color: 'var(--ch-on-accent)' } : undefined}
+                      >
+                        {r}x
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
           </div>
 
           {/* 双状态对照 */}
@@ -286,7 +394,15 @@ export function VideoScene({
                   k: '播放器状态',
                   v: (
                     <span data-testid="player-state">
-                      {observation?.playerState ?? '未观测'}
+                      {observation
+                        ? observation.playerState
+                        : currentTask?.taskType === 'doc'
+                          ? '在线文档（非媒体）'
+                          : currentTask?.taskType === 'quiz'
+                            ? '在线测验（非媒体）'
+                            : currentTask?.taskType === 'other'
+                              ? '拓展任务（非媒体）'
+                              : '未观测'}
                       {observation && (
                         <span className="chip chip-neutral" style={{ marginLeft: 8 }}>
                           {observation.origin}
@@ -346,9 +462,22 @@ export function VideoScene({
                   {continuous ? '播完本集自动切下一集' : '连续播放已关闭'}
                 </p>
               </div>
-              <span className="chip chip-tint">
-                {tasks.filter((t) => t.platformStatus === 'completed').length}/{tasks.length || '—'}
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {onContinuousChange && tasks.length > 0 && (
+                  <button
+                    type="button"
+                    className={`btn ${continuous ? 'btn-primary' : ''}`}
+                    style={{ fontSize: 11, padding: '3px 8px' }}
+                    onClick={() => onContinuousChange(!continuous)}
+                    title={continuous ? '点击关闭连续播放' : '点击开启连续播放'}
+                  >
+                    {continuous ? '连播已开' : '单集播放'}
+                  </button>
+                )}
+                <span className="chip chip-tint">
+                  {tasks.filter((t) => t.platformStatus === 'completed').length}/{tasks.length || '—'}
+                </span>
+              </div>
             </div>
           </header>
 
@@ -385,17 +514,32 @@ export function VideoScene({
               </Notice>
             </div>
           ) : (
-            <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <ul
+              style={{
+                listStyle: 'none',
+                margin: 0,
+                padding: 0,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8,
+                maxHeight: 'min(560px, calc(100vh - 280px))',
+                overflowY: 'auto',
+                paddingRight: 4
+              }}
+            >
               {tasks.map((t) => {
                 const active = t.id === activeTaskId
+                const isDoc = t.taskType === 'doc'
+                const isQuiz = t.taskType === 'quiz'
+                const isOther = t.taskType === 'other'
+
                 return (
                   <li key={t.id}>
                     <button
                       type="button"
-                      className="chapter-item"
+                      className={`chapter-item ${active ? 'active' : ''}`}
                       style={{
                         width: '100%',
-                        border: 'none',
                         cursor: 'pointer',
                         fontFamily: 'inherit',
                         textAlign: 'left'
@@ -407,10 +551,16 @@ export function VideoScene({
                       <span style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
                         {t.platformStatus === 'completed' ? (
                           <CheckCircle2 size={16} style={{ color: 'var(--ch-emerald-600)', flexShrink: 0 }} />
+                        ) : isDoc ? (
+                          <FileText size={16} style={{ color: 'var(--ch-primary)', flexShrink: 0 }} />
+                        ) : isQuiz ? (
+                          <HelpCircle size={16} style={{ color: 'var(--ch-warning)', flexShrink: 0 }} />
+                        ) : isOther ? (
+                          <Layers size={16} style={{ color: 'var(--ch-text-3)', flexShrink: 0 }} />
                         ) : active ? (
                           <Play size={16} style={{ flexShrink: 0, fill: 'currentColor' }} />
                         ) : (
-                          <Clock size={16} style={{ color: 'var(--ch-text-3)', flexShrink: 0 }} />
+                          <Film size={16} style={{ color: 'var(--ch-text-3)', flexShrink: 0 }} />
                         )}
                         <span style={{ minWidth: 0 }}>
                           <span
@@ -428,8 +578,26 @@ export function VideoScene({
                           </span>
                         </span>
                       </span>
-                      <span style={{ fontSize: 10.5, flexShrink: 0, opacity: 0.75 }}>
-                        {fmtDuration(t.durationSeconds)}
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                        <span
+                          className={`chip ${
+                            isDoc
+                              ? 'chip-tint'
+                              : isQuiz
+                                ? 'chip-warning'
+                                : isOther
+                                  ? 'chip-neutral'
+                                  : 'chip-accent'
+                          }`}
+                          style={{ fontSize: 9.5, padding: '1px 5px', borderRadius: 4 }}
+                        >
+                          {isDoc ? '文档' : isQuiz ? '测验' : isOther ? '其他' : '视频'}
+                        </span>
+                        {t.durationSeconds ? (
+                          <span style={{ fontSize: 10.5, opacity: 0.75 }}>
+                            {fmtDuration(t.durationSeconds)}
+                          </span>
+                        ) : null}
                       </span>
                     </button>
                   </li>
@@ -476,6 +644,16 @@ export function VideoScene({
               <Notice tone="warn">
                 <AlertTriangle size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: -1 }} />
                 连续播放已关闭，播完不会自动切换。
+                {onContinuousChange && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    style={{ marginLeft: 6, fontSize: 10.5, padding: '1px 6px', textDecoration: 'underline' }}
+                    onClick={() => onContinuousChange(true)}
+                  >
+                    开启连播
+                  </button>
+                )}
               </Notice>
             </div>
           )}

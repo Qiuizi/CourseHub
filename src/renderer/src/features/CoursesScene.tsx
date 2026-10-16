@@ -146,15 +146,30 @@ export function CoursesScene({
             text="正在读取真实课程列表，请稍候..."
           />
         ) : courses.length === 0 ? (
-          <Empty
-            icon={<AlertCircle size={24} />}
-            tone={error ? 'error' : 'neutral'}
-            text={
-              error
-                ? `未能读取课程：${error}`
-                : '当前平台未检测到在读课程，请确认账号是否已登录并加入了班级。'
-            }
-          />
+          <div style={{ padding: '16px 0', textAlign: 'center' }}>
+            <Empty
+              icon={<AlertCircle size={24} />}
+              tone={error ? 'error' : 'neutral'}
+              text={
+                error
+                  ? `未能读取课程：${error}`
+                  : '当前平台未检测到在读课程，请确认账号是否已登录并加入了班级。'
+              }
+            />
+            {error && (error.includes('验证') || error.includes('ANTISPIDER')) && (
+              <div style={{ marginTop: 14 }}>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={onOpenPlatform}
+                  title="打开内置浏览器完成图片验证码"
+                >
+                  <Globe size={13} />
+                  前往内置浏览器完成验证
+                </button>
+              </div>
+            )}
+          </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             <div

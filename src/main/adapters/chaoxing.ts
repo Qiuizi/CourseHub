@@ -11,6 +11,8 @@
  * - 状态标注：若缺少真实线上账号联调，网络请求层返回 unverified，但不妨碍本地 Schema 校验。
  */
 
+import type { SignInEvent, ChapterNode, TaskType } from '@shared/types'
+
 export interface ChaoxingCourse {
   courseId: string
   classId: string
@@ -351,6 +353,89 @@ export function buildMooc2ChapterListRequest(
 }
 
 /**
+ * 依据 HTML 片段（图标 class）与任务标题，精准区分类别：
+ * 视频 (video)、文档 (doc)、测验 (quiz)、其他 (other) 与 无法识别 (unknown)。
+ */
+export function classifyChaoxingTaskType(liHtml: string, title: string): TaskType {
+  const lowerHtml = liHtml.toLowerCase()
+  const lowerTitle = title.toLowerCase()
+
+  // 1. 测验 / 作业 / 考试
+  if (
+    lowerHtml.includes('icon-ceshi') ||
+    lowerHtml.includes('icon-zuoye') ||
+    lowerHtml.includes('icon-ti') ||
+    lowerHtml.includes('test') ||
+    lowerTitle.includes('测试') ||
+    lowerTitle.includes('测验') ||
+    lowerTitle.includes('作业') ||
+    lowerTitle.includes('小测') ||
+    lowerTitle.includes('考试') ||
+    lowerTitle.includes('自测') ||
+    lowerTitle.includes('练习')
+  ) {
+    return 'quiz'
+  }
+
+  // 2. 文档 / 课件 / PDF / PPT / 说明 / 须知 / 导学
+  if (
+    lowerHtml.includes('icon-wendang') ||
+    lowerHtml.includes('icon-pdf') ||
+    lowerHtml.includes('icon-doc') ||
+    lowerHtml.includes('icon-ppt') ||
+    lowerTitle.includes('文档') ||
+    lowerTitle.includes('课件') ||
+    lowerTitle.includes('教案') ||
+    lowerTitle.includes('pdf') ||
+    lowerTitle.includes('ppt') ||
+    lowerTitle.includes('讲义') ||
+    lowerTitle.includes('阅读') ||
+    lowerTitle.includes('说明') ||
+    lowerTitle.includes('须知') ||
+    lowerTitle.includes('导学案')
+  ) {
+    return 'doc'
+  }
+
+  // 3. 互动 / 讨论 / 直播 / 咨询 / 联系等其他任务
+  if (
+    lowerHtml.includes('icon-taolun') ||
+    lowerHtml.includes('icon-zhibo') ||
+    lowerHtml.includes('icon-huodong') ||
+    lowerTitle.includes('讨论') ||
+    lowerTitle.includes('直播') ||
+    lowerTitle.includes('互动') ||
+    lowerTitle.includes('答疑') ||
+    lowerTitle.includes('咨询') ||
+    lowerTitle.includes('联系我们')
+  ) {
+    return 'other'
+  }
+
+  // 4. 视频
+  if (
+    lowerHtml.includes('icon-shipin') ||
+    lowerHtml.includes('icon_video') ||
+    lowerHtml.includes('icon_sp') ||
+    lowerTitle.includes('视频') ||
+    lowerTitle.includes('录像') ||
+    lowerTitle.includes('微课') ||
+    lowerTitle.includes('讲座') ||
+    lowerTitle.includes('.mp4') ||
+    lowerTitle.includes('.flv')
+  ) {
+    return 'video'
+  }
+
+  // 5. 常见教学小节（包含明确的小节节号 1.1 / 2.1 等常规教学视频）
+  if (/^[0-9]+(\.[0-9]+)+/i.test(title.trim())) {
+    return 'video'
+  }
+
+  return 'unknown'
+}
+
+/**
  * 解析 MOOC2 studentcourse 课程章节列表 HTML。
  * 提取一级章节（章）、二级章节（节）、任务类型、状态与直达学习链接。
  */
@@ -478,24 +563,7 @@ export function parseMooc2ChapterListResponse(
         status = 'not_started'
       }
 
-      let taskType: 'video' | 'doc' | 'quiz' | 'unknown' = 'video'
-      if (
-        li.includes('icon-ceshi') ||
-        title.includes('测试') ||
-        title.includes('作业') ||
-        title.includes('测验')
-      ) {
-        taskType = 'quiz'
-      } else if (
-        li.includes('icon-wendang') ||
-        title.includes('文档') ||
-        title.includes('教案') ||
-        title.includes('PDF')
-      ) {
-        taskType = 'doc'
-      } else {
-        taskType = 'video'
-      }
+      const taskType = classifyChaoxingTaskType(li, title)
 
       const taskUrl = `https://mooc1.chaoxing.com/mycourse/studentstudy?chapterId=${chapterId}&courseId=${courseId}&clazzid=${clazzId}&cpi=${cpi}&enc=${enc}&mooc2=1`
 
@@ -586,8 +654,6 @@ export function parseActiveListResponse(
 
   return { ok: true, activities: items }
 }
-
-import type { SignInEvent, ChapterNode } from '@shared/types'
 
 export interface SessionLike {
   cookies: {

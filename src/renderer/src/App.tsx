@@ -121,8 +121,16 @@ export default function App(): JSX.Element {
       if (target?.sourceUrl && (target.sourceUrl.startsWith('http://') || target.sourceUrl.startsWith('https://'))) {
         void api.browser.navigate(activeId, target.sourceUrl)
       }
-      pushActivity(`自动连续播放：切换至 ${target?.title ?? evt.currentTaskId}`)
-      setNotice(`自动连播：已切换至 ${target?.title ?? evt.currentTaskId}`)
+      if (target?.taskType && target.taskType !== 'video') {
+        void api.video.stopContinuous()
+        setContinuous(false)
+        pushActivity(`连播遇到非视频任务（${target.title}），已安全暂停等待操作`)
+        setNotice(`连播遇到非视频任务（${target.title}），已安全暂停等待操作`)
+      } else {
+        void api.video.observe(activeId, evt.currentTaskId)
+        pushActivity(`自动连续播放：切换至 ${target?.title ?? evt.currentTaskId}`)
+        setNotice(`自动连播：已切换至 ${target?.title ?? evt.currentTaskId}`)
+      }
     })
     const unsub3 = api.events.onContinuousCompleted(() => {
       setContinuous(false)
@@ -272,6 +280,22 @@ export default function App(): JSX.Element {
     [activeId, api, pushActivity]
   )
 
+  const handleContinuousChange = useCallback(
+    (v: boolean) => {
+      const playableTasks = tasks.filter((t) => !t.taskType || t.taskType === 'video')
+      if (v && playableTasks.length === 0) {
+        setNotice('当前课程章节没有可播放的视频任务')
+        setContinuous(false)
+        return
+      }
+      setContinuous(v)
+      pushActivity(v ? '开启连续播放' : '关闭连续播放')
+      if (v) void api.video.startContinuous(activeId, playableTasks.map((t) => t.id))
+      else void api.video.stopContinuous()
+    },
+    [tasks, activeId, api, pushActivity]
+  )
+
   /**
    * 确保当前平台的视图已打开。
    * 切到依赖原生视图的场景（视频/浏览）时必须先打开，
@@ -294,6 +318,10 @@ export default function App(): JSX.Element {
 
   const handleEnterCourseStudy = useCallback(
     async (course: CourseItem) => {
+      // 切换课程时安全停止前序连播并复位状态
+      void api.video.stopContinuous()
+      setContinuous(false)
+
       setSelectedCourseName(course.name)
       setScene('video')
       setNotice(`正在读取 ${course.name} 真实章节目录...`)
@@ -480,6 +508,7 @@ export default function App(): JSX.Element {
             tasks={tasks}
             activeTaskId={activeTaskId}
             continuous={continuous}
+            onContinuousChange={handleContinuousChange}
             autoMute={autoMute}
             volume={volume}
             rate={rate}
@@ -786,12 +815,7 @@ export default function App(): JSX.Element {
         <Drawer
           observation={observation}
           continuous={continuous}
-          onContinuousChange={(v) => {
-            setContinuous(v)
-            pushActivity(v ? '开启连续播放' : '关闭连续播放')
-            if (v) void api.video.startContinuous(activeId, tasks.map(t => t.id))
-            else void api.video.stopContinuous()
-          }}
+          onContinuousChange={handleContinuousChange}
           autoMute={autoMute}
           onAutoMuteChange={setAutoMute}
           submitMode={submitMode}
@@ -824,7 +848,20 @@ export default function App(): JSX.Element {
           }}
           data-testid="notice"
         >
-          {notice}
+          <span>{notice}</span>
+          {notice.includes('验证') && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ padding: '2px 8px', fontSize: 11 }}
+              onClick={() => {
+                setScene('browser')
+                setNotice(null)
+              }}
+            >
+              前往内置验证
+            </button>
+          )}
           <button type="button" className="btn btn-ghost" style={{ padding: '2px 6px' }} onClick={() => setNotice(null)}>
             ✕
           </button>

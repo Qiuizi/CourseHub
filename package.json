@@ -1,6 +1,6 @@
 {
   "name": "coursehub",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "CourseHub - 课堂交互与学习任务测试工作台 (Electron + React 18 + TypeScript)",
   "private": true,
   "main": "./out/main/index.js",
