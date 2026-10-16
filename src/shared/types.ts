@@ -50,6 +50,22 @@ export interface Course {
   fetchedAt: string
 }
 
+export type TaskType = 'video' | 'doc' | 'quiz' | 'unknown'
+export type ChapterTaskStatus = 'completed' | 'in_progress' | 'not_started' | 'unknown'
+
+export interface ChapterNode {
+  courseId: string
+  clazzId: string
+  chapterId: string
+  parentId: string | null
+  title: string
+  order: number
+  taskType: TaskType
+  taskUrl: string | null
+  status: ChapterTaskStatus
+  source: string
+}
+
 export interface SignInEvent {
   id: string
   platformId: PlatformId

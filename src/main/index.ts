@@ -11,7 +11,7 @@ import path from 'node:path'
 import type { PlatformId, GeoTestRun, PlaybackObservation } from '@shared/types'
 import { defaultStore, type Store } from './services/store'
 import { GeoTestManager } from './geo-test/geo-test-manager'
-import { PlatformBrowser, fixturesDir } from './browser/platform-browser'
+import { PlatformBrowser, fixturesDir, flushAllPlatformSessions } from './browser/platform-browser'
 import { TestbedServer } from './testbed/testbed-server'
 import { registerIpc } from './ipc'
 
@@ -27,13 +27,16 @@ if (!gotLock) {
   app.quit()
 }
 
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
+
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
-    width: 1600,
-    height: 1000,
-    minWidth: 1100,
-    minHeight: 700,
-    show: false,
+    width: 1400,
+    height: 900,
+    minWidth: 1000,
+    minHeight: 650,
+    center: true,
+    show: true,
     backgroundColor: '#f0f4f9',
     autoHideMenuBar: true,
     title: 'CourseHub',
@@ -47,7 +50,10 @@ function createWindow(): BrowserWindow {
     }
   })
 
-  win.on('ready-to-show', () => win.show())
+  win.on('ready-to-show', () => {
+    win.show()
+    win.focus()
+  })
 
   // 本地 UI 不允许跳转到外部站点
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -128,8 +134,9 @@ app.on('second-instance', () => {
 })
 
 /**
+/**
  * 退出清理。定位覆盖必须清除，播放器观察器必须停止，
- * 否则会留下悬挂的 CDP 覆盖与定时器。
+ * 且强制将所有平台的 Cookies 刷写至磁盘 SQLite 数据库，避免 Session Cookie 丢失。
  */
 function cleanup(): void {
   ipcHandle?.dispose()
@@ -138,6 +145,7 @@ function cleanup(): void {
   geo?.disposeSync()
   void testbedServer?.stop()
   testbedServer = null
+  void flushAllPlatformSessions()
 }
 
 app.on('window-all-closed', () => {

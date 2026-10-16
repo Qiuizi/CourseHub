@@ -23,6 +23,8 @@ export interface ChapterTask {
   order: number | null
   durationSeconds: number | null
   platformStatus: 'unknown' | 'not_started' | 'in_progress' | 'completed'
+  sourceUrl?: string
+  taskType?: string
 }
 
 function fmtDuration(sec: number | null): string {

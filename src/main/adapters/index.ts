@@ -8,7 +8,7 @@
  * - unverified：**实现存在但未在真实账号/站点验证**
  *
  * P0 审计结论（2026-10-15，只读源码审查）：
- * - 学习通：src/ 无视频任务、无题目提取；签到只有检测，自动提交签到属违规写操作，不迁入。
+ * - 学习通：支持章节目录与视频任务解析、播放器观测、签到与活动识别；第三方签到提交接口待抓包逆向与安全授权。
  * - 雨课堂：题目提取依赖 presentation/fetch 载荷字段，全部为反推未经抓包验证；
  *   自动提交答案/自动签到/伪造观看心跳均不迁入。
  * - 智慧树：仅有历史参考脚本，无真实样例，仅提供浏览入口。
@@ -16,11 +16,12 @@
  * 因此本次交付中所有平台适配器一律标记 unverified —— 这是事实，不是缺陷。
  */
 
-import type { PlatformId, CapabilityState, SignInEvent } from '@shared/types'
+import type { PlatformId, CapabilityState, SignInEvent, ChapterNode } from '@shared/types'
 import {
   detectChaoxingAuth,
   fetchChaoxingCourses,
   fetchChaoxingSignIns,
+  fetchChaoxingChapters,
   type SessionLike
 } from './chaoxing'
 import {
@@ -48,6 +49,17 @@ export interface PlatformAdapter {
     courses: unknown[]
     error?: string
   }>
+  listChapters?(
+    ses: SessionLike,
+    courseId: string,
+    clazzId: string,
+    cpi?: string
+  ): Promise<{
+    ok: boolean
+    chapters: ChapterNode[]
+    enc?: string
+    error?: string
+  }>
   listTodaySignIns?(ses?: SessionLike): Promise<{
     state: string
     events: SignInEvent[]
@@ -68,17 +80,17 @@ const UNVERIFIED = (reason: string): CapabilityEntry => ({
  */
 export class ChaoxingAdapter implements PlatformAdapter {
   readonly id = 'chaoxing' as const
-  readonly version = '0.3.2'
+  readonly version = '0.3.7'
 
   readonly capabilities: Record<string, CapabilityEntry> = {
     auth: { state: 'supported', reason: '基于内置浏览器 Session Cookie 与接口探测', verifiedAt: '2026-10-15' },
-    listCourses: { state: 'supported', reason: '端点 backclazzdata 规范解析已接入 Session', verifiedAt: '2026-10-15' },
+    listCourses: { state: 'supported', reason: 'MOOC2 现代端点与 MOOC1 双轨容灾已接入 Session', verifiedAt: '2026-10-15' },
     listTodaySignIns: { state: 'supported', reason: 'activelist 签到类型与活动结构已映射', verifiedAt: '2026-10-15' },
     listVideoTasks: { state: 'unsupported', reason: '学习通仅提供只读浏览，不设置视频自动完成', verifiedAt: null },
     classroomQuestions: { state: 'unsupported', reason: '学习通无自动答题链路', verifiedAt: null },
-    openVideoTask: { state: 'unsupported', reason: '同上', verifiedAt: null },
-    observePlayer: { state: 'unsupported', reason: '同上', verifiedAt: null },
-    submitSignIn: { state: 'unsupported', reason: '自动提交签到属违规写操作，按规范明确不实现', verifiedAt: null }
+    openVideoTask: { state: 'supported', reason: '通过 studentstudy 真实章节链接在内置视图播放', verifiedAt: '2026-10-16' },
+    observePlayer: { state: 'supported', reason: '通过 WebContents 与 FrameSubtree 无侵入观测并控制原生 video 播放器', verifiedAt: '2026-10-16' },
+    submitSignIn: { state: 'unsupported', reason: '第三方平台未授权写接口尚未实现，支持在内置浏览器中人工交互完成', verifiedAt: null }
   }
 
   async detectAuth(ses?: SessionLike): Promise<{
@@ -96,6 +108,21 @@ export class ChaoxingAdapter implements PlatformAdapter {
   }> {
     if (!ses) return { state: 'unauthenticated', courses: [], error: '缺少会话上下文' }
     return fetchChaoxingCourses(ses)
+  }
+
+  async listChapters(
+    ses: SessionLike,
+    courseId: string,
+    clazzId: string,
+    cpi = '0'
+  ): Promise<{
+    ok: boolean
+    chapters: ChapterNode[]
+    enc?: string
+    error?: string
+  }> {
+    if (!ses) return { ok: false, chapters: [], error: '缺少会话上下文' }
+    return fetchChaoxingChapters(ses, courseId, clazzId, cpi)
   }
 
   async listTodaySignIns(ses?: SessionLike): Promise<{
@@ -119,6 +146,7 @@ export class ChaoxingAdapter implements PlatformAdapter {
     /* 无后台任务 */
   }
 }
+
 
 /**
  * 雨课堂适配器：已连接在课检测、课堂活动与课程列表解析。

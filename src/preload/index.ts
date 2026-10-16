@@ -15,7 +15,8 @@ import type {
   GeoTestRun,
   PlatformId,
   PlaybackObservation,
-  TestActionPlan
+  TestActionPlan,
+  ChapterNode
 } from '@shared/types'
 
 export interface PlatformSummary {
@@ -38,7 +39,11 @@ const api = {
         { platformId }
       ),
     open: (input: { platformId: PlatformId; fixture?: string }) =>
-      invoke<{ platformId: PlatformId; url: string | null }>('platform:open', input)
+      invoke<{ platformId: PlatformId; url: string | null }>('platform:open', input),
+    courses: (platformId: PlatformId) =>
+      invoke<{ state: string; courses: unknown[]; error?: string }>('platform:courses', { platformId }),
+    chapters: (input: { platformId: PlatformId; courseId: string; clazzId: string; cpi?: string }) =>
+      invoke<{ ok: boolean; chapters: ChapterNode[]; enc?: string; error?: string }>('platform:chapters', input)
   },
   testbed: {
     loadFixture: (fixture: string) =>
@@ -79,7 +84,14 @@ const api = {
     auth: (platformId: PlatformId) =>
       invoke<{ state: string; evidence: string | null }>('platform:auth', { platformId }),
     courses: (platformId: PlatformId) =>
-      invoke<{ state: string; courses: unknown[]; error?: string }>('platform:courses', { platformId })
+      invoke<{ state: string; courses: unknown[]; error?: string }>('platform:courses', { platformId }),
+    chapters: (platformId: PlatformId, courseId: string, clazzId: string, cpi?: string) =>
+      invoke<{ ok: boolean; chapters: ChapterNode[]; enc?: string; error?: string }>('platform:chapters', {
+        platformId,
+        courseId,
+        clazzId,
+        cpi
+      })
   },
   video: {
     list: (platformId: PlatformId) =>
@@ -89,6 +101,8 @@ const api = {
     observe: (platformId: PlatformId, taskId: string) =>
       invoke<{ observing: string }>('video:observe', { platformId, taskId }),
     stopObserve: (taskId: string) => invoke<{ stopped: boolean }>('video:stop-observe', { taskId }),
+    setAudioMute: (platformId: PlatformId, muted: boolean) =>
+      invoke<{ muted: boolean }>('video:set-audio-mute', { platformId, muted }),
     startContinuous: (platformId: PlatformId, taskQueue?: string[]) =>
       invoke<{ started: boolean; queue: string[] }>('video:start-continuous', { platformId, taskQueue }),
     stopContinuous: () => invoke<{ stopped: boolean }>('video:stop-continuous')

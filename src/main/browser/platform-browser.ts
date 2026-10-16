@@ -38,9 +38,16 @@ export const PLATFORM_CONFIGS: readonly PlatformConfig[] = [
       'https://mooc1-api.chaoxing.com',
       'https://mobilelearn.chaoxing.com',
       'https://www.chaoxing.com',
-      'https://chaoxing.com'
+      'https://chaoxing.com',
+      'https://i.chaoxing.com',
+      'https://mooc1.chaoxing.com',
+      'https://mooc1-1.chaoxing.com',
+      'https://mooc1-2.chaoxing.com',
+      'https://study-api.chaoxing.com',
+      'https://ananas.chaoxing.com'
     ],
-    homeUrl: 'https://passport2.chaoxing.com/login'
+    // 关键优化：已登录用户直达工作台；未登录时超星官方自动 302 重定向到 passport2 扫码登录页
+    homeUrl: 'https://i.chaoxing.com'
   },
   {
     id: 'yuketang',
@@ -120,6 +127,18 @@ export function isOriginAllowed(
   })
 }
 
+export async function flushAllPlatformSessions(): Promise<void> {
+  const platforms: PlatformId[] = ['chaoxing', 'yuketang', 'zhihuishu']
+  await Promise.all(
+    platforms.map(async (id) => {
+      try {
+        const ses = session.fromPartition(sessionNameFor(id))
+        await ses.cookies.flushStore()
+      } catch {}
+    })
+  )
+}
+
 /**
  * 平台浏览器宿主。
  * 显式持有 BrowserWindow 引用，避免依赖全局可变状态。
@@ -143,7 +162,10 @@ export class PlatformBrowser {
     return new PlatformBrowser(platformId, cfg)
   }
 
-  /** 该平台的持久化 Session。测试台使用专用测试分区并放行 geolocation，生产平台权限默认全拒。 */
+  /**
+   * 该平台的持久化 Session。
+   * 完全遵循平台原有认证与生命周期策略，绝不篡改任何 Cookie 的 expirationDate 或令牌属性。
+   */
   getSession(): Electron.Session {
     if (this.platformId === 'testbed') {
       return testSession()
@@ -243,6 +265,22 @@ export class PlatformBrowser {
     }
   }
 
+  /** 物理管线级静音控制：直接控制 Chromium Audio Pipeline，杜绝任何声音外放 */
+  setAudioMuted(muted: boolean): void {
+    const wc = this.webContents
+    if (wc && !wc.isDestroyed()) {
+      wc.setAudioMuted(muted)
+    }
+  }
+
+  isAudioMuted(): boolean {
+    const wc = this.webContents
+    if (wc && !wc.isDestroyed()) {
+      return wc.isAudioMuted()
+    }
+    return false
+  }
+
   async navigate(url: string): Promise<{ ok: boolean; error?: string }> {
     if (!isOriginAllowed(url, this.config.allowedOrigins, this.config.allowFileProtocol)) {
       return { ok: false, error: `UNSUPPORTED: 目标 origin 不在 ${this.config.name} 白名单内` }
@@ -256,8 +294,22 @@ export class PlatformBrowser {
     }
   }
 
-  async loadHome(): Promise<void> {
+  /**
+   * 加载平台首页。
+   * 关键防护：若当前已处于平台合法页面中（例如用户已扫码进入课程列表），
+   * 且非 force 强制重置，则保持当前页面，绝不重新导航回 /login 造成“掉登录”。
+   */
+  async loadHome(force = false): Promise<void> {
     const view = this.ensureView()
+    const current = this.currentUrl
+    if (
+      !force &&
+      current &&
+      current !== 'about:blank' &&
+      isOriginAllowed(current, this.config.allowedOrigins, this.config.allowFileProtocol)
+    ) {
+      return
+    }
     await view.webContents.loadURL(this.config.homeUrl).catch(() => undefined)
   }
 

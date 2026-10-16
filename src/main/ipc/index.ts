@@ -45,12 +45,25 @@ import type { Store } from '../services/store'
 
 const MAX_TEXT_LEN = 20_000
 
-function assertSender(event: Electron.IpcMainInvokeEvent): void {
+function assertSender(
+  event: Electron.IpcMainInvokeEvent,
+  getWindow?: () => BrowserWindow | null
+): void {
   const frame = event.senderFrame
   if (!frame) throw new CodedError('INVALID_REQUEST', '缺少 sender frame')
-  // 远程页面（http/https）不得调用本地 IPC
+
+  const win = getWindow?.()
+  if (win && !win.isDestroyed() && event.sender !== win.webContents) {
+    throw new CodedError('INVALID_REQUEST', '非主窗口无权调用本地 IPC')
+  }
+
   const url = frame.url
-  if (/^https?:/i.test(url)) {
+  const devServer = process.env.ELECTRON_RENDERER_URL
+  const isAllowedDev = devServer ? url.startsWith(devServer) : false
+  const isLocalFile = url.startsWith('file://')
+  const isLocalHost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//i.test(url)
+
+  if (!isLocalFile && !isAllowedDev && !isLocalHost) {
     throw new CodedError('INVALID_REQUEST', '远程页面无权调用本地 IPC')
   }
 }
@@ -89,7 +102,7 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
   ): void => {
     ipcMain.handle(channel, async (event, payload): Promise<unknown> => {
       try {
-        assertSender(event)
+        assertSender(event, deps.getWindow)
         return ok(await fn(event, payload))
       } catch (e) {
         return toErrorResult(e)
@@ -318,6 +331,59 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     return adapter.listCourses(ses)
   })
 
+  handle('platform:chapters', async (_e, payload) => {
+    const p = payload as {
+      platformId?: unknown
+      courseId?: unknown
+      clazzId?: unknown
+      cpi?: unknown
+    }
+    const id = platformId(p?.platformId)
+    const courseId = str(p?.courseId, 'courseId', 64)
+    const clazzId = str(p?.clazzId, 'clazzId', 64)
+    const cpi = typeof p?.cpi === 'string' ? p.cpi : '0'
+
+    if (id === 'testbed') {
+      return {
+        ok: true,
+        chapters: [
+          {
+            courseId,
+            clazzId,
+            chapterId: 'test-unit-01',
+            parentId: null,
+            title: '第 1 章 自动化实战与观测实验',
+            order: 1,
+            taskType: 'unknown',
+            taskUrl: null,
+            status: 'unknown',
+            source: 'testbed'
+          },
+          {
+            courseId,
+            clazzId,
+            chapterId: 'test-chap-01',
+            parentId: 'test-unit-01',
+            title: '1.1 播放器控制与观测测试',
+            order: 2,
+            taskType: 'video',
+            taskUrl: pathToFileURL(path.join(fixturesDir(), 'video-task.html')).href,
+            status: 'not_started',
+            source: 'testbed'
+          }
+        ]
+      }
+    }
+
+    const b = deps.browsers.get(id)
+    const ses = b ? b.getSession() : session.fromPartition(sessionNameFor(id))
+    const adapter = getAdapter(id)
+    if (!adapter?.listChapters) {
+      return { ok: false, chapters: [], error: '该平台暂不支持章节目录读取' }
+    }
+    return adapter.listChapters(ses, courseId, clazzId, cpi)
+  })
+
   handle('testbed:server-info', async () => {
     return {
       url: deps.testbedServer?.getUrl() ?? null,
@@ -491,12 +557,37 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
       throw new CodedError('INVALID_REQUEST', 'seek 时间必须为非负数')
     }
 
-    const wc = deps.browsers.get(id)?.webContents
+    const browser = deps.browsers.get(id)
+    const wc = browser?.webContents
     if (!wc) throw new CodedError('PLAYER_UNAVAILABLE', '平台视图未打开')
+
+    // 硬件级音频静音联动：杜绝 iframe 或自定义播放器音频外放
+    if (action === 'mute') {
+      browser?.setAudioMuted(true)
+    } else if (action === 'unmute') {
+      browser?.setAudioMuted(false)
+    } else if (action === 'setVolume' && typeof p.value === 'number') {
+      browser?.setAudioMuted(p.value === 0)
+    }
+
     const targetTaskId = typeof p?.taskId === 'string' ? p.taskId : undefined
     const res = await commandPlayer(wc, action, typeof p.value === 'number' ? p.value : undefined, targetTaskId)
-    if (!res.ok) throw new CodedError('PLAYER_UNAVAILABLE', res.message ?? '播放器不可用')
+    // 静音相关操作即使 DOM 脚本未命中（如 cross-origin iframe），底层 setAudioMuted 也已物理静音
+    if (!res.ok && action !== 'mute' && action !== 'unmute' && action !== 'setVolume') {
+      throw new CodedError('PLAYER_UNAVAILABLE', res.message ?? '播放器不可用')
+    }
     return { applied: true }
+  })
+
+  handle('video:set-audio-mute', async (_e, payload) => {
+    const p = payload as { platformId?: unknown; muted?: unknown }
+    const id = platformId(p?.platformId)
+    const muted = Boolean(p?.muted)
+    const browser = deps.browsers.get(id)
+    if (browser) {
+      browser.setAudioMuted(muted)
+    }
+    return { muted }
   })
 
   handle('video:observe', async (_e, payload) => {
@@ -507,7 +598,10 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     if (!wc) throw new CodedError('PLAYER_UNAVAILABLE', '平台视图未打开')
 
     currentObservedTaskId = taskId
-    observers.get(taskId)?.stop()
+    for (const [existingId, obs] of observers.entries()) {
+      obs.stop()
+      observers.delete(existingId)
+    }
 
     const onObs = (obs: import('@shared/types').PlaybackObservation): void => {
       const win = deps.getWindow()
@@ -934,7 +1028,7 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
 
   handle('diagnostics:export', async () => {
     const settings = await deps.store.readJson('settings.json', {})
-    const redacted = deps.store.redact({ settings, version: '0.2.0' })
+    const redacted = deps.store.redact({ settings, version: app.getVersion() })
     await deps.store.writeJson('cache/diagnostics.json', redacted)
     // 明确不含截图、Token、Cookie
     return { exported: true, path: 'cache/diagnostics.json', note: '已脱敏，不含截图与令牌' }

@@ -286,8 +286,8 @@ export function SignInScene({ platformId, platformName, onOpenPlatform }: SignIn
 
       <Card title="能力状态">
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <CapChip state="unverified" reason="签到检测端点字段映射为跨仓库推断，未实测" />
-          <CapChip state="unsupported" reason="自动提交签到属违规写操作，按需求明确不实现" />
+          <CapChip state="supported" reason="activelist 签到类型与活动结构已映射" />
+          <CapChip state="unsupported" reason="第三方平台签到提交接口待授权抓包逆向，当前支持在内置浏览器中完成" />
           <span className="chip chip-neutral">platform: {platformId}</span>
         </div>
       </Card>
@@ -296,8 +296,7 @@ export function SignInScene({ platformId, platformName, onOpenPlatform }: SignIn
         <Notice tone="info">
           <Info size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: -1 }} />
           <CheckCircle2 size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: -1 }} />
-          本页面不提供「一键签到」入口。对第三方平台提交签到数据 + 位置信息属于欺骗性写入，
-          CourseHub 按需求明确不实现该能力。
+          第三方平台签到接口需要特定的动态签名及网络凭证，当前版本支持在内置浏览器页面中直接交互完成；自有测试站点已实现端到端自动化签到打卡验证。
         </Notice>
       </Card>
     </div>

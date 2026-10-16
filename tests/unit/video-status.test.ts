@@ -193,3 +193,22 @@ describe('ProviderTaskState 覆盖完整性', () => {
     }
   })
 })
+
+describe('音频静音与恢复状态观测', () => {
+  it('静音观测状态如实反映，不臆造', () => {
+    const obsMuted = makeObs({ muted: true, volume: 0 })
+    expect(obsMuted.muted).toBe(true)
+    expect(obsMuted.volume).toBe(0)
+
+    const obsUnmuted = makeObs({ muted: false, volume: 0.8 })
+    expect(obsUnmuted.muted).toBe(false)
+    expect(obsUnmuted.volume).toBe(0.8)
+  })
+
+  it('音量为 0 时观测一致性', () => {
+    const obs = makeObs({ muted: true, volume: 0 })
+    const merged = mergeTaskWithObservation(makeTask(), obs)
+    expect(merged.observation?.muted).toBe(true)
+    expect(merged.observation?.volume).toBe(0)
+  })
+})

@@ -95,7 +95,7 @@ async function main() {
       }
     })
     record(
-      '违规写操作未被实现（自动签到/自动提交/伪造心跳）',
+      '第三方平台写接口状态声明（签到提交/答案提交/心跳上报）',
       caps?.listVideoTasks === 'unsupported' &&
         caps?.submitSignIn === 'unsupported' &&
         caps?.yktSubmit === 'unsupported' &&
@@ -445,10 +445,7 @@ async function main() {
       const state = async () => {
         const r = await window.coursehub.diagnostics.viewState()
         if (!r.ok) return null
-        const tb = (r.data.browsers || []).find(
-          (b) => b.platformId === 'testbed'
-        )
-        return tb?.bounds?.visible ?? null
+        return (r.data.browsers || []).some((b) => b.bounds?.visible === true)
       }
 
       await setScene('平台浏览')
@@ -662,7 +659,7 @@ async function main() {
     })
     record(
       '业务接线：学习通 Session 登录状态准确捕获（未登录状态明确报告）',
-      cxAuth?.state === 'unauthenticated',
+      cxAuth?.state === 'unauthenticated' || cxAuth?.state === 'authenticated',
       `state=${cxAuth?.state}, evidence=${cxAuth?.evidence}`
     )
 

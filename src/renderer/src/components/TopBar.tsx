@@ -10,6 +10,7 @@ import type { PlatformId } from '@shared/types'
 
 /** 场景定义。原型为「视频课堂 / 章节作业 / 课堂签到」，此处补齐浏览与测试入口。 */
 export type SceneId =
+  | 'courses'
   | 'video'
   | 'quiz'
   | 'signin'
@@ -19,6 +20,7 @@ export type SceneId =
   | 'settings'
 
 export const SCENES: { id: SceneId; label: string; short: string }[] = [
+  { id: 'courses', label: '课程中心', short: '课程' },
   { id: 'video', label: '视频课堂', short: '视频' },
   { id: 'quiz', label: '章节作业', short: '作业' },
   { id: 'signin', label: '课堂签到', short: '签到' },

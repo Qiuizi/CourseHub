@@ -19,3 +19,6 @@ npm-debug.log*
 .vscode/
 .idea/
 .DS_Store
+
+# 临时抓包与探针调试素材
+scratch-*.html

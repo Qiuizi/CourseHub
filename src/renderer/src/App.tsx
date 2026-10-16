@@ -19,6 +19,7 @@ import { QuizScene } from './features/QuizScene'
 import { GeoScene } from './features/GeoScene'
 import { AiScene } from './features/AiScene'
 import { SettingsScene } from './features/SettingsScene'
+import { CoursesScene, type CourseItem } from './features/CoursesScene'
 
 const TEST_TASKS: ChapterTask[] = [
   { id: 'fixture-t1', title: '开场导学（测试素材）', order: 1, durationSeconds: 8, platformStatus: 'unknown' },
@@ -26,9 +27,17 @@ const TEST_TASKS: ChapterTask[] = [
 ]
 
 export default function App(): JSX.Element {
-  const [scene, setScene] = useState<SceneId>('video')
+  const [scene, setScene] = useState<SceneId>('courses')
   const [platforms, setPlatforms] = useState<PlatformEntry[]>([])
-  const [activeId, setActiveId] = useState<PlatformId>('testbed')
+  const [activeId, setActiveId] = useState<PlatformId>(() => {
+    try {
+      const saved = localStorage.getItem('coursehub_active_platform')
+      if (saved && ['chaoxing', 'yuketang', 'zhihuishu', 'testbed'].includes(saved)) {
+        return saved as PlatformId
+      }
+    } catch {}
+    return 'chaoxing' // 默认优先进入实际业务平台
+  })
   const [drawerOpen, setDrawerOpen] = useState(true)
 
   const [observation, setObservation] = useState<PlaybackObservation | null>(null)
@@ -51,6 +60,7 @@ export default function App(): JSX.Element {
 
   const [tasks, setTasks] = useState<ChapterTask[]>([])
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
+  const [selectedCourseName, setSelectedCourseName] = useState<string | null>(null)
 
   const videoViewportRef = useRef<HTMLDivElement | null>(null)
   const browserViewportRef = useRef<HTMLDivElement | null>(null)
@@ -91,6 +101,11 @@ export default function App(): JSX.Element {
     ])
   }, [])
 
+  const tasksRef = useRef<ChapterTask[]>([])
+  useEffect(() => {
+    tasksRef.current = tasks
+  }, [tasks])
+
   /* --------------------------- 事件订阅 --------------------------- */
   useEffect(() => api.events.onVideoObservation(setObservation), [api])
   useEffect(() => api.events.onGeoUpdate(setGeoRun), [api])
@@ -102,8 +117,12 @@ export default function App(): JSX.Element {
     })
     const unsub2 = api.events.onTaskSwitched((evt) => {
       setActiveTaskId(evt.currentTaskId)
-      pushActivity(`自动连续播放：切换至 ${evt.currentTaskId}`)
-      setNotice(`自动连播：已切换至 ${evt.currentTaskId}`)
+      const target = tasksRef.current.find((x) => x.id === evt.currentTaskId)
+      if (target?.sourceUrl && (target.sourceUrl.startsWith('http://') || target.sourceUrl.startsWith('https://'))) {
+        void api.browser.navigate(activeId, target.sourceUrl)
+      }
+      pushActivity(`自动连续播放：切换至 ${target?.title ?? evt.currentTaskId}`)
+      setNotice(`自动连播：已切换至 ${target?.title ?? evt.currentTaskId}`)
     })
     const unsub3 = api.events.onContinuousCompleted(() => {
       setContinuous(false)
@@ -115,7 +134,7 @@ export default function App(): JSX.Element {
       unsub2()
       unsub3()
     }
-  }, [api, pushActivity])
+  }, [api, activeId, pushActivity])
 
   /* --------------------------- 原生视图 bounds --------------------------- */
 
@@ -128,7 +147,10 @@ export default function App(): JSX.Element {
    */
   useEffect(() => {
     const usesPlatformView = scene === 'video' || scene === 'browser'
-    void api.browser.setVisible(activeId, usesPlatformView)
+    const allPlatformIds: PlatformId[] = ['testbed', 'chaoxing', 'yuketang', 'zhihuishu']
+    for (const id of allPlatformIds) {
+      void api.browser.setVisible(id, usesPlatformView && id === activeId)
+    }
     // 定位测试视图同样只在 geo 场景可见
     void api.geoTest.setActive(scene === 'geo')
   }, [scene, activeId, api])
@@ -189,18 +211,30 @@ export default function App(): JSX.Element {
 
   useEffect(() => {
     void checkAuth(activeId)
+    const currentPlatform = platforms.find((p) => p.id === activeId)
+    // 关键优化：已登录状态下绝不进行 5 秒高频轰炸，避免触发平台风控踢出登录态；
+    // 只有在未登录状态时才 5 秒轮询等待扫码；已登录后切换为低频保活（60 秒）
     if (scene === 'browser' && (activeId === 'chaoxing' || activeId === 'yuketang')) {
+      const intervalMs = currentPlatform?.auth === 'authenticated' ? 60000 : 5000
       const timer = setInterval(() => {
         void checkAuth(activeId)
-      }, 5000)
+      }, intervalMs)
       return () => clearInterval(timer)
     }
     return undefined
-  }, [activeId, scene, checkAuth])
+  }, [activeId, scene, checkAuth, platforms])
+
+  // 静音托管与底层物理音频管线联动：开关开启时确保全局静音，杜绝外放
+  useEffect(() => {
+    void api.video.setAudioMute(activeId, autoMute)
+  }, [activeId, autoMute, api])
 
   const openPlatform = useCallback(
     async (id: PlatformId) => {
       setActiveId(id)
+      try {
+        localStorage.setItem('coursehub_active_platform', id)
+      } catch {}
       setNotice(null)
       const r = await api.platform.open({ platformId: id, fixture: 'video-task.html' })
       if (!r.ok) {
@@ -256,6 +290,70 @@ export default function App(): JSX.Element {
       pushActivity(`打开平台 ${id}`)
     },
     [activeId, api, pushActivity]
+  )
+
+  const handleEnterCourseStudy = useCallback(
+    async (course: CourseItem) => {
+      setSelectedCourseName(course.name)
+      setScene('video')
+      setNotice(`正在读取 ${course.name} 真实章节目录...`)
+      pushActivity(`进入课程学习：${course.name}`)
+
+      await ensureOpen(activeId)
+
+      try {
+        const res = await api.platform.chapters({
+          platformId: activeId,
+          courseId: course.courseId,
+          clazzId: course.classId,
+          cpi: course.cpi || '0'
+        })
+
+        if (!res.ok) {
+          setNotice(`获取章节目录失败: ${res.error.message}`)
+          return
+        }
+
+        const rawChapters = res.data.chapters || []
+        // 筛选叶子任务节点（具有学习跳转链接）
+        const taskNodes = rawChapters.filter((ch) => ch.taskUrl)
+
+        if (taskNodes.length === 0) {
+          setNotice(`该课程暂无在线章节任务点，已在视图中打开课程首页`)
+          const fallbackUrl =
+            course.courseUrl ||
+            `https://mooc1.chaoxing.com/visit/stucoursemiddle?courseid=${course.courseId}&clazzid=${course.classId}&cpi=${course.cpi || '0'}&ismooc2=1&v=2`
+          void api.browser.navigate(activeId, fallbackUrl)
+          setTasks([])
+          setActiveTaskId(null)
+          return
+        }
+
+        const chapterTasks: ChapterTask[] = taskNodes.map((ch) => ({
+          id: ch.chapterId,
+          title: ch.title,
+          order: ch.order,
+          durationSeconds: null,
+          platformStatus: ch.status === 'completed' ? 'completed' : 'unknown',
+          sourceUrl: ch.taskUrl ?? undefined,
+          taskType: ch.taskType
+        }))
+
+        setTasks(chapterTasks)
+        const first = chapterTasks[0]!
+        setActiveTaskId(first.id)
+        setNotice(`已加载 ${chapterTasks.length} 个章节任务点，正在打开第 1 个任务`)
+
+        if (first.sourceUrl) {
+          void api.browser.navigate(activeId, first.sourceUrl)
+        }
+        void startObserving(first.id)
+        pushActivity(`已载入任务：${first.title}`)
+      } catch (err) {
+        setNotice(`加载章节失败: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    },
+    [activeId, api, ensureOpen, pushActivity, startObserving]
   )
 
   const loadFixture = useCallback(
@@ -368,7 +466,7 @@ export default function App(): JSX.Element {
           <VideoScene
             platformName={current?.name ?? '测试台'}
             observation={observation}
-            courseName={activeId === 'testbed' ? '测试台 · 本地 fixture' : null}
+            courseName={selectedCourseName ?? (activeId === 'testbed' ? '测试台 · 本地 fixture' : null)}
             chapterName={
               activeTaskId
                 ? (tasks.find((t) => t.id === activeTaskId)?.title ?? null)
@@ -385,11 +483,19 @@ export default function App(): JSX.Element {
             viewportRef={videoViewportRef}
             onSelectTask={(id) => {
               setActiveTaskId(id)
+              const t = tasks.find((x) => x.id === id)
+              if (t?.sourceUrl) {
+                void api.browser.navigate(activeId, t.sourceUrl)
+              }
               void startObserving(id)
               void api.video.command(activeId, 'play', undefined, id)
-              pushActivity(`切换到任务 ${id}`)
+              pushActivity(`切换到任务 ${t?.title ?? id}`)
             }}
-            onCommand={(a, v) => void runCommand(a, v)}
+            onCommand={(a, v) => {
+              if (a === 'mute') setAutoMute(true)
+              if (a === 'unmute') setAutoMute(false)
+              void runCommand(a, v)
+            }}
             onVolumeChange={setVolume}
             onRateChange={(r) => {
               setRate(r)
@@ -433,27 +539,60 @@ export default function App(): JSX.Element {
               </button>
 
               <span className="chip chip-neutral">{current?.name ?? activeId}</span>
-              <span style={{ fontSize: 11, color: 'var(--ch-text-2)' }}>
-                独立持久化会话 · 权限默认全拒
-              </span>
+              
+              {/* 平台快捷切换组，避免用户找不到入口 */}
+              <div style={{ display: 'inline-flex', gap: 4, background: 'var(--ch-nav)', padding: '2px 4px', borderRadius: 999 }}>
+                {platforms.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className="platform-pill"
+                    aria-current={p.id === activeId}
+                    style={{ padding: '3px 10px', fontSize: 11 }}
+                    onClick={() => {
+                      setActiveId(p.id)
+                      void openPlatform(p.id)
+                    }}
+                  >
+                    <span className={`dot ${p.auth === 'authenticated' ? 'on' : 'off'}`} />
+                    {p.shortName}
+                  </button>
+                ))}
+              </div>
 
               <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => void loadFixture('video-task.html')}
-                  title="加载测试台视频 fixture"
-                >
-                  <Globe size={13} />
-                  测试视频页
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => void loadFixture('classroom-questions.html')}
-                >
-                  测试题目页
-                </button>
+                {activeId === 'testbed' ? (
+                  <>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => void loadFixture('video-task.html')}
+                      title="加载测试台视频 fixture"
+                    >
+                      <Globe size={13} />
+                      测试视频页
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => void loadFixture('classroom-questions.html')}
+                    >
+                      测试题目页
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={async () => {
+                      await openPlatform(activeId)
+                    }}
+                    title={`打开 ${current?.name ?? activeId} 官方登录/主页`}
+                  >
+                    <Globe size={13} />
+                    前往官方页面
+                  </button>
+                )}
                 <button
                   type="button"
                   className="btn"
@@ -510,6 +649,22 @@ export default function App(): JSX.Element {
               return r.data.questions
             }}
             onOpenSettings={() => setScene('settings')}
+          />
+        )
+
+      case 'courses':
+        return (
+          <CoursesScene
+            platformId={activeId}
+            platformName={current?.name ?? '学习通'}
+            onOpenPlatform={() => void openPlatform(activeId)}
+            onNavigateCourse={(url) => {
+              setScene('browser')
+              void ensureOpen(activeId).then(() => {
+                void api.browser.navigate(activeId, url)
+              })
+            }}
+            onEnterCourseStudy={(course) => void handleEnterCourseStudy(course)}
           />
         )
 

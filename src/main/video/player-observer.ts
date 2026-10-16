@@ -57,15 +57,41 @@ function buildObserverScript(taskId: string): string {
       if (el && el.tagName === 'VIDEO') main = el;
     }
   }
+  const pickBestVideo = (videos) => {
+    if (!videos || videos.length === 0) return null;
+    if (videos.length === 1) return videos[0];
+    const score = (v) => {
+      let s = 0;
+      const src = v.currentSrc || v.src || '';
+      if (src && !src.startsWith('blob:null') && !src.startsWith('about:')) s += 100;
+      if (Number.isFinite(v.duration) && v.duration > 0) s += 50;
+      if (v.readyState >= 2) s += 30;
+      if (!v.paused) s += 40;
+      if ((v.currentTime || 0) > 0) s += 20;
+      try {
+        const rect = v.getBoundingClientRect();
+        if (rect.width > 120 && rect.height > 80) s += 20;
+      } catch (_) {}
+      return s;
+    };
+    let best = videos[0];
+    let maxScore = score(best);
+    for (let i = 1; i < videos.length; i++) {
+      const sc = score(videos[i]);
+      if (sc > maxScore) {
+        best = videos[i];
+        maxScore = sc;
+      }
+    }
+    return best;
+  };
+
   if (!main) {
     const videos = getAllVideos();
     if (videos.length === 0) {
       return { found: false, reason: 'no-video-element' };
     }
-    main = videos[0];
-    for (const v of videos) {
-      if ((v.currentTime || 0) > (main.currentTime || 0)) main = v;
-    }
+    main = pickBestVideo(videos);
   }
 
   const deriveState = (v) => {
@@ -182,7 +208,21 @@ export class PlayerObserver {
         return
       }
       try {
-        const raw = (await this.wc.executeJavaScript(this.script, true)) as RawObserverResult
+        let raw = (await this.wc.executeJavaScript(this.script, true)) as RawObserverResult
+        if (!raw?.found && this.wc.mainFrame?.framesInSubtree) {
+          for (const frame of this.wc.mainFrame.framesInSubtree) {
+            if (frame === this.wc.mainFrame || frame.isDestroyed()) continue
+            try {
+              const subRaw = (await frame.executeJavaScript(this.script, true)) as RawObserverResult
+              if (subRaw?.found) {
+                raw = subRaw
+                break
+              }
+            } catch {
+              // frame 导航中或不支持 JS
+            }
+          }
+        }
         if (this.destroyed) return
         this.onObservation(toObservation(this.taskId, raw))
       } catch {
@@ -260,11 +300,39 @@ export async function commandPlayer(
         if (el && el.tagName === 'VIDEO') main = el;
       }
     }
+    const pickBestVideo = (videos) => {
+      if (!videos || videos.length === 0) return null;
+      if (videos.length === 1) return videos[0];
+      const score = (v) => {
+        let s = 0;
+        const src = v.currentSrc || v.src || '';
+        if (src && !src.startsWith('blob:null') && !src.startsWith('about:')) s += 100;
+        if (Number.isFinite(v.duration) && v.duration > 0) s += 50;
+        if (v.readyState >= 2) s += 30;
+        if (!v.paused) s += 40;
+        if ((v.currentTime || 0) > 0) s += 20;
+        try {
+          const rect = v.getBoundingClientRect();
+          if (rect.width > 120 && rect.height > 80) s += 20;
+        } catch (_) {}
+        return s;
+      };
+      let best = videos[0];
+      let maxScore = score(best);
+      for (let i = 1; i < videos.length; i++) {
+        const sc = score(videos[i]);
+        if (sc > maxScore) {
+          best = videos[i];
+          maxScore = sc;
+        }
+      }
+      return best;
+    };
+
     if (!main) {
       const videos = getAllVideos();
       if (videos.length === 0) return { ok: false, reason: 'no-video-element' };
-      main = videos[0];
-      for (const v of videos) { if ((v.currentTime||0) > (main.currentTime||0)) main = v; }
+      main = pickBestVideo(videos);
     }
     if (typeof window.__chSetActiveTask === 'function' && targetId) {
       try { window.__chSetActiveTask(targetId); } catch (_) {}
@@ -310,10 +378,28 @@ export async function commandPlayer(
   })()`
 
   try {
-    const res = (await wc.executeJavaScript(script, true)) as {
+    let res = (await wc.executeJavaScript(script, true)) as {
       ok?: boolean
       pending?: boolean
       reason?: string
+    }
+    if (!res?.ok && !res?.pending && res?.reason === 'no-video-element' && wc.mainFrame?.framesInSubtree) {
+      for (const frame of wc.mainFrame.framesInSubtree) {
+        if (frame === wc.mainFrame || frame.isDestroyed()) continue
+        try {
+          const subRes = (await frame.executeJavaScript(script, true)) as {
+            ok?: boolean
+            pending?: boolean
+            reason?: string
+          }
+          if (subRes?.ok || subRes?.pending) {
+            res = subRes
+            break
+          }
+        } catch {
+          // ignore error in individual subframe
+        }
+      }
     }
     if (res?.ok || res?.pending) return { ok: true }
     return {
@@ -329,3 +415,4 @@ export async function commandPlayer(
     }
   }
 }
+
