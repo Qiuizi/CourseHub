@@ -14,8 +14,20 @@ import type { ClassroomQuestion, PlatformId, TestActionPlan, QuestionOption } fr
 import { normalizeQuestion, validatePlanAgainstQuestion, mapAnswerToOptions } from '@shared/question'
 import type { RawQuestionDom } from '@shared/question'
 
-/** 注入脚本：优先匹配测试台契约，其次穿透提取超星学习通等在线课堂题型。 */
+/**
+ * 注入脚本：优先匹配测试台契约，其次穿透提取超星学习通等在线课堂题型。
+ *
+ * 扩展覆盖范围（v2）：
+ * - 超星随堂测验：.TiMu / .questionLi / .quesItem / .questionRoot
+ * - 超星在线作业：.testpaper_content .mark_item / .mark_item / .stem_wrap
+ * - 通配类名：[class*="question_item"] / [class*="questionItem"] 等
+ * - 题干提取：多 STEM_SELECTORS 策略，逐一尝试
+ * - 选项提取：支持 A. / A、/ (A) / 无前缀自动分配
+ * - 诊断信息：frameUrl / bodyClass / candidateCount（排障用，无敏感数据）
+ */
 const EXTRACT_SCRIPT = `(() => {
+  const clean = (s) => (s ? String(s).replace(/[\\r\\n\\t]+/g, ' ').replace(/\\s+/g, ' ').trim() : '');
+
   // 1. 测试台契约节点（测试台 fixture 优先）
   const nodes = Array.from(document.querySelectorAll('[data-ch-question]'));
   if (nodes.length > 0) {
@@ -24,51 +36,118 @@ const EXTRACT_SCRIPT = `(() => {
       const control = node.getAttribute('data-ch-control') || 'none';
       const textEl = node.querySelector('[data-ch-text]');
       const optionEls = Array.from(node.querySelectorAll('[data-ch-option]'));
+      const imgNodes = Array.from(node.querySelectorAll('img'));
+      const images = imgNodes.map((img) => img.src || img.getAttribute('src')).filter(Boolean);
+      const rect = node.getBoundingClientRect();
+      const dimensions = {
+        height: Math.round(rect.height),
+        width: Math.round(rect.width),
+        scrollHeight: Math.round(node.scrollHeight || rect.height),
+        isOverflow: rect.height > (window.innerHeight || 800),
+        top: Math.round(rect.top),
+        left: Math.round(rect.left)
+      };
       return {
         id,
         control,
-        text: textEl ? textEl.textContent : null,
+        text: textEl ? clean(textEl.textContent) : null,
         options: optionEls.map((el) => ({
           key: el.getAttribute('data-ch-option') || '',
-          label: el.textContent || ''
+          label: clean(el.textContent)
         })),
+        images,
+        dimensions,
         multipleAllowed: control === 'checkbox'
       };
     });
-    return { questions };
+    return { questions, _debug: { source: 'testbed', frameUrl: location.href, candidateCount: nodes.length } };
   }
 
   // 2. 超星学习通及主流在线教育作业/课堂练习 DOM 结构
-  let qNodes = Array.from(document.querySelectorAll(
-    '.TiMu, div[class*="TiMu"], .questionLi, .question-item, .subject-item, [class*="question_item"], [class*="subject_item"]'
-  ));
+  // 选择器按精确程度从高到低排列，避免误匹配容器
+  const CANDIDATE_SELECTORS = [
+    '.TiMu',
+    'div[class*="TiMu"]',
+    '.questionLi',
+    '.question-item',
+    '.subject-item',
+    '.quesItem',
+    '.questionRoot',
+    '.testpaper_content .mark_item',
+    '.mark_item',
+    '.stem_wrap',
+    '[class*="question_item"]',
+    '[class*="subject_item"]',
+    '[class*="quesItem"]',
+    '[class*="questionWrap"]',
+    '[class*="questionItem"]'
+  ].join(', ');
+
+  let qNodes = Array.from(document.querySelectorAll(CANDIDATE_SELECTORS));
+
+  // 回退：宽泛选择器
   if (qNodes.length === 0) {
     qNodes = Array.from(document.querySelectorAll('.Zy_TItle, .clearfix[class*="title"]'));
   }
+
+  // 诊断信息（供排障，不含用户答案或 Cookie）
+  const _debug = {
+    source: 'chaoxing',
+    frameUrl: location.href,
+    candidateCount: qNodes.length,
+    bodyClass: document.body.className.slice(0, 120),
+    firstH3: (document.querySelector('h3') || {}).textContent
+      ? document.querySelector('h3').textContent.slice(0, 60) : null
+  };
 
   const questions = [];
   const seenIds = new Set();
 
   for (let idx = 0; idx < qNodes.length; idx++) {
     const node = qNodes[idx];
-    // 仅当包含嵌套子题容器时跳过外层大题
-    if (node.querySelector('.TiMu, div[class*="TiMu"], .questionLi, .question-item')) continue;
 
-    const rawId = node.getAttribute('id') || node.getAttribute('data-id') || 'q-' + (idx + 1);
+    // 跳过外层容器（内部还有题目节点）
+    const innerQ = node.querySelector(
+      '.TiMu, div[class*="TiMu"], .questionLi, .question-item, .quesItem, .mark_item'
+    );
+    if (innerQ) continue;
+
+    const rawId = (
+      node.getAttribute('id') ||
+      node.getAttribute('data-id') ||
+      node.getAttribute('data-questionid') ||
+      node.getAttribute('data-qid') ||
+      ('q-' + (idx + 1))
+    );
     if (seenIds.has(rawId)) continue;
     seenIds.add(rawId);
 
-    const titleEl = node.querySelector('.Zy_TItle, .clearfix, .title, .stem, h3, [class*="title"], [class*="stem"]') || node;
+    // 题干提取：按优先级逐一尝试 STEM_SELECTORS
+    const STEM_SELECTORS = [
+      '.Zy_TItle', '.clearfix', '.stem', '.stem_wrap',
+      '.questionTitle', '.question_title', '.questionStem', '.ques_stem',
+      '.mark_item_stem', 'p.stem', '.title',
+      'h3', '[class*="title"]', '[class*="stem"]', '[class*="question_text"]'
+    ];
+    let titleEl = null;
+    for (var si = 0; si < STEM_SELECTORS.length; si++) {
+      titleEl = node.querySelector(STEM_SELECTORS[si]);
+      if (titleEl) break;
+    }
+    if (!titleEl) titleEl = node;
+
     let stemText = '';
     if (titleEl) {
       const clone = titleEl.cloneNode(true);
-      const toRemove = clone.querySelectorAll('ul, ol, .Zy_ulTop, .stem_answer, [class*="answer"], [class*="option"], [class*="btn"]');
-      toRemove.forEach((el) => el.remove());
-      stemText = (clone.textContent || '').trim();
-    } else {
-      stemText = (node.textContent || '').slice(0, 200).trim();
+      const toRemove = clone.querySelectorAll(
+        'ul, ol, .Zy_ulTop, .stem_answer, [class*="answer"], [class*="option"],' +
+        ' [class*="btn"], input, label, .mark_item_opts'
+      );
+      toRemove.forEach(function(el) { el.parentNode && el.parentNode.removeChild(el); });
+      stemText = clean(clone.textContent);
     }
 
+    // 题型识别（多信号综合判断）
     const hasCheckbox = node.querySelectorAll('input[type="checkbox"]').length > 0;
     const hasRadio = node.querySelectorAll('input[type="radio"]').length > 0;
     const hasTextarea = node.querySelectorAll('textarea').length > 0;
@@ -91,15 +170,23 @@ const EXTRACT_SCRIPT = `(() => {
       control = 'radio';
     }
 
-    const optNodes = Array.from(node.querySelectorAll(
-      'ul.Zy_ulTop li, ul.stem_answer li, .Zy_ulTop li, [class*="answer"] li, [class*="option"] li, ul li'
-    ));
+    // 选项提取：多选择器策略
+    const OPT_SELECTORS = [
+      'ul.Zy_ulTop li', 'ul.stem_answer li', '.Zy_ulTop li',
+      '[class*="answer"] li', '[class*="option"] li',
+      '.mark_item_opts li', '.questionOptions li',
+      '.optionItem', '[class*="optionItem"]',
+      'ul li', 'ol li'
+    ].join(', ');
+
+    const optNodes = Array.from(node.querySelectorAll(OPT_SELECTORS));
 
     const options = [];
     if (optNodes.length > 0) {
-      optNodes.forEach((optEl, oIdx) => {
-        const text = (optEl.textContent || '').trim();
-        const m = text.match(/^([A-G]|[0-9]|对|错|正确|错误)[\\.、\\s\\:：](.+)$/);
+      optNodes.forEach(function(optEl, oIdx) {
+        const text = clean(optEl.textContent);
+        // 兼容多种 key 格式：A. / A、/ (A) / A B（空格分隔）
+        const m = text.match(/^([A-G]|[0-9]|对|错|正确|错误)[\\.\\u3002\\uff0c\\uff0c\\u3001\\s\\uff1a\\uff09\\u0029\\uff08\\u0028\\u003a]+(.+)$/);
         let key = '';
         let label = '';
         if (m) {
@@ -110,7 +197,7 @@ const EXTRACT_SCRIPT = `(() => {
           label = text;
         }
         if (label) {
-          options.push({ key, label });
+          options.push({ key: key, label: label });
         }
       });
     }
@@ -120,25 +207,52 @@ const EXTRACT_SCRIPT = `(() => {
       options.push({ key: 'B', label: '错误（错）' });
     }
 
+    const imgNodes = Array.from(node.querySelectorAll('img'));
+    const images = imgNodes
+      .map(function(img) { return img.src || img.getAttribute('src'); })
+      .filter(function(src) { return Boolean(src) && !src.includes('space.gif') && !src.includes('icon'); });
+
+    const rect = node.getBoundingClientRect();
+    const scrollHeight = node.scrollHeight || Math.round(rect.height);
+    const isOverflow = rect.height > (window.innerHeight || 800) || scrollHeight > (window.innerHeight || 800);
+    const dimensions = {
+      height: Math.round(rect.height),
+      width: Math.round(rect.width),
+      scrollHeight: Math.round(scrollHeight),
+      isOverflow: isOverflow,
+      top: Math.round(rect.top),
+      left: Math.round(rect.left)
+    };
+
     if (stemText.length > 0) {
       questions.push({
         id: rawId,
-        control,
+        control: control,
         text: stemText,
-        options,
-        multipleAllowed
+        options: options,
+        images: images,
+        dimensions: dimensions,
+        multipleAllowed: multipleAllowed
       });
     }
   }
 
-  return { questions };
+  return { questions: questions, _debug: _debug };
 })()`
+
+export interface ExtractDebugInfo {
+  source: string
+  frameUrl: string
+  candidateCount: number
+  bodyClass?: string
+  firstH3?: string | null
+}
 
 export async function extractQuestions(
   wc: Electron.WebContents,
   platformId: PlatformId = 'testbed'
-): Promise<{ questions: ClassroomQuestion[]; error: string | null }> {
-  if (wc.isDestroyed()) return { questions: [], error: 'NOT_FOUND: 页面已销毁' }
+): Promise<{ questions: ClassroomQuestion[]; error: string | null; debugInfo: ExtractDebugInfo[] }> {
+  if (wc.isDestroyed()) return { questions: [], error: 'NOT_FOUND: 页面已销毁', debugInfo: [] }
   try {
     const frames: Electron.WebFrameMain[] = []
     const collectFrames = (frame: Electron.WebFrameMain) => {
@@ -149,11 +263,16 @@ export async function extractQuestions(
 
     const allRaw: RawQuestionDom[] = []
     const seen = new Set<string>()
+    const debugInfoList: ExtractDebugInfo[] = []
 
     for (const frame of frames) {
       try {
         const raw = (await frame.executeJavaScript(EXTRACT_SCRIPT, true)) as {
           questions?: RawQuestionDom[]
+          _debug?: ExtractDebugInfo
+        }
+        if (raw?._debug) {
+          debugInfoList.push(raw._debug)
         }
         for (const q of raw?.questions ?? []) {
           if (!seen.has(q.id)) {
@@ -171,11 +290,12 @@ export async function extractQuestions(
     const questions = allRaw.map((q) =>
       normalizeQuestion(q, platformId, url, detectedAt)
     )
-    return { questions, error: null }
+    return { questions, error: null, debugInfo: debugInfoList }
   } catch (e) {
     return {
       questions: [],
-      error: e instanceof Error ? e.message : String(e)
+      error: e instanceof Error ? e.message : String(e),
+      debugInfo: []
     }
   }
 }

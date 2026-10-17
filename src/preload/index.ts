@@ -19,7 +19,9 @@ import type {
   PlayPolicy,
   TestActionPlan,
   ChapterNode,
-  ChapterInspectionResult
+  ChapterInspectionResult,
+  CaptureViewOptions,
+  CaptureViewResult
 } from '@shared/types'
 
 export interface PlatformSummary {
@@ -77,8 +79,10 @@ const api = {
       invoke<{ visible: boolean }>('browser:set-visible', { platformId, visible }),
     openExternal: (platformId: PlatformId, url: string) =>
       invoke<{ opened: boolean }>('browser:open-external', { platformId, url }),
-    captureView: (platformId: PlatformId) =>
-      invoke<{ dataUrl: string; width: number; height: number }>('browser:capture-view', { platformId })
+    captureView: (input: CaptureViewOptions | PlatformId) => {
+      const payload = typeof input === 'string' ? { platformId: input, mode: 'viewport' } : input
+      return invoke<CaptureViewResult>('browser:capture-view', payload)
+    }
   },
   classroom: {
     todaySignIns: (platformId?: PlatformId) =>

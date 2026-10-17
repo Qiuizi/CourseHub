@@ -10,7 +10,7 @@ import {
   Camera,
   Sparkles
 } from 'lucide-react'
-import type { PlatformId, PlaybackObservation, GeoTestRun, ClassroomQuestion, PlayPolicy, TaskType, AIModelInfo, AIResult } from '@shared/types'
+import type { PlatformId, PlaybackObservation, GeoTestRun, ClassroomQuestion, PlayPolicy, TaskType, AIModelInfo, AIResult, ActiveQuestionContext } from '@shared/types'
 import { TopBar, SCENES, type SceneId, type PlatformEntry } from './components/TopBar'
 import { Drawer, type SubmitMode } from './components/Drawer'
 import { CapChip, Notice } from './components/ui'
@@ -66,6 +66,12 @@ export default function App(): JSX.Element {
   const [aiResult, setAiResult] = useState<AIResult | null>(null)
   const [aiError, setAiError] = useState<string | null>(null)
   const [aiPrefill, setAiPrefill] = useState<ClassroomQuestion | null>(null)
+  const [extractedQuestions, setExtractedQuestions] = useState<ClassroomQuestion[]>([])
+  const [activeQuestionIdx, setActiveQuestionIdx] = useState<number>(0)
+  const [questionContext, setQuestionContext] = useState<ActiveQuestionContext | null>(null)
+  const [imageInfo, setImageInfo] = useState<{ width: number; height: number; mode: string } | null>(null)
+  const [captureNotice, setCaptureNotice] = useState<string | null>(null)
+  const activeContextIdRef = useRef<string | null>(null)
   const [activity, setActivity] = useState<{ id: string; time: string; title: string }[]>([])
   const [theme, setTheme] = useState<'light' | 'dark'>('light')
 
@@ -128,6 +134,20 @@ export default function App(): JSX.Element {
       pushActivity('已停止连续播放')
     })
     const unsub2 = api.events.onTaskSwitched((evt) => {
+      // 切换任务/章节时：中断旧请求并重置上下文，避免旧回答错误标记为新题目
+      void api.ai.cancel()
+      activeContextIdRef.current = null
+      setQuestionContext(null)
+      setExtractedQuestions([])
+      setActiveQuestionIdx(0)
+      setAiPromptText('')
+      setAiImagePreview(null)
+      setImageInfo(null)
+      setCaptureNotice(null)
+      setAiStreamingText('')
+      setAiResult(null)
+      setAiError(null)
+
       setActiveTaskId(evt.currentTaskId)
       const target = tasksRef.current.find((x) => x.id === evt.currentTaskId)
       if (target?.sourceUrl && (target.sourceUrl.startsWith('http://') || target.sourceUrl.startsWith('https://'))) {
@@ -394,8 +414,15 @@ export default function App(): JSX.Element {
 
       setSelectedCourseName(course.name)
       // 切换课程时复位 AI 助教上下文，不混用不同课程的题目或截图
+      void api.ai.cancel()
+      activeContextIdRef.current = null
+      setQuestionContext(null)
+      setExtractedQuestions([])
+      setActiveQuestionIdx(0)
       setAiPromptText('')
       setAiImagePreview(null)
+      setImageInfo(null)
+      setCaptureNotice(null)
       setAiStreamingText('')
       setAiResult(null)
       setAiError(null)
@@ -555,33 +582,91 @@ export default function App(): JSX.Element {
     }
   }, [models])
 
+  const formatQuestionPrompt = (q: ClassroomQuestion, idx: number, total: number) => {
+    const typeLabel =
+      q.questionType === 'single'
+        ? '单选题'
+        : q.questionType === 'multiple'
+          ? '多选题'
+          : q.questionType === 'judgement'
+            ? '判断题'
+            : q.questionType === 'text'
+              ? '填空/简答题'
+              : '课堂题目'
+    let formatted = `【${typeLabel}】（第 ${idx + 1}/${total} 题）\n${q.extractedText || ''}\n`
+    if (q.options && q.options.length > 0) {
+      formatted += '\n选项：\n' + q.options.map((opt) => `${opt.key}. ${opt.label}`).join('\n')
+    }
+    return formatted
+  }
+
   const handleDrawerExtract = useCallback(async () => {
     try {
-      setNotice('正在从当前页面提取题目...')
+      setNotice('正在从当前课堂页面（含嵌套框架）穿透提取题目...')
       const r = await api.question.extract(activeId)
-      if (!r.ok || !r.data.questions || r.data.questions.length === 0) {
-        setNotice('当前页面未检测到结构化题目，已切换至 AI 助教，可点击「截屏问 AI」或手动输入')
+      if (!r.ok) {
+        const errMsg = r.error.message ?? '未知错误'
+        setNotice(`提取失败：${errMsg}（请确认平台视图已打开并加载完成）`)
+        setDrawerTab('ai')
+        setDrawerOpen(true)
+        return
+      }
+      if (!r.data.questions || r.data.questions.length === 0) {
+        // 生成诊断提示：从 debugInfo 中获取 frame URL 和 bodyClass
+        const debugInfo = (r.data as { debugInfo?: { frameUrl?: string; candidateCount?: number; bodyClass?: string }[] }).debugInfo ?? []
+        const frameCount = debugInfo.length
+        const anyCandidate = debugInfo.some((d) => (d.candidateCount ?? 0) > 0)
+        let diagMsg = '当前页面未检测到结构化题目。'
+        if (frameCount === 0) {
+          diagMsg += '平台视图未打开或页面未加载完成。'
+        } else if (anyCandidate) {
+          diagMsg += `已检测到候选题目节点但提取为空（共 ${frameCount} 个 frame）。可能是题目文本被图片替代，请使用截图分析。`
+        } else {
+          diagMsg += `共检查了 ${frameCount} 个 frame，未匹配到超星/主流平台的题目选择器。`
+          diagMsg += '请先导航到包含题目的课堂测验页面，或点击「截当前视口」发送截图。'
+        }
+        setNotice(diagMsg)
         setDrawerTab('ai')
         setDrawerOpen(true)
         return
       }
       const qList = r.data.questions
+      setExtractedQuestions(qList)
+      setActiveQuestionIdx(0)
+
       const first = qList[0]!
-      const typeLabel =
-        first.questionType === 'single'
-          ? '单选题'
-          : first.questionType === 'multiple'
-            ? '多选题'
-            : first.questionType === 'judgement'
-              ? '判断题'
-              : first.questionType === 'text'
-                ? '填空/简答题'
-                : '课堂题目'
-      let formatted = `【${typeLabel}】${first.extractedText || ''}\n`
-      if (first.options && first.options.length > 0) {
-        formatted += '\n选项：\n' + first.options.map((opt) => `${opt.key}. ${opt.label}`).join('\n')
+      const ctxId = `ctx-${Date.now()}`
+      activeContextIdRef.current = ctxId
+
+      const currentChapter = tasks.find((t) => t.id === activeTaskId)
+      const ctx: ActiveQuestionContext = {
+        contextId: ctxId,
+        platformId: activeId,
+        courseName: selectedCourseName,
+        courseId: null,
+        chapterId: activeTaskId,
+        chapterTitle: currentChapter?.title ?? null,
+        questionId: first.id,
+        questionIndex: 0,
+        totalQuestions: qList.length,
+        questionType: first.questionType,
+        stemText: first.extractedText || '',
+        options: first.options,
+        images: first.images,
+        imageSource: null,
+        extractedAt: new Date().toISOString()
       }
+      setQuestionContext(ctx)
+
+      const formatted = formatQuestionPrompt(first, 0, qList.length)
       setAiPromptText(formatted)
+
+      if (first.images && first.images.length > 0 && !aiImagePreview) {
+        setAiImagePreview(first.images[0])
+        setImageInfo({ width: 0, height: 0, mode: 'embedded' })
+        setCaptureNotice('已自动选用该题目内嵌的高清原图')
+      }
+
       setDrawerTab('ai')
       setDrawerOpen(true)
       setNotice(`已提取 ${qList.length} 道题目中的第 1 题，可在右侧编辑或直接发送`)
@@ -589,37 +674,115 @@ export default function App(): JSX.Element {
     } catch (err) {
       setNotice(`提取题目失败: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [activeId, api, pushActivity])
+  }, [activeId, activeTaskId, tasks, selectedCourseName, aiImagePreview, api, pushActivity])
 
-  const handleDrawerCapture = useCallback(async () => {
+  const handleSelectQuestionIndex = useCallback((targetIdx: number) => {
+    if (targetIdx < 0 || targetIdx >= extractedQuestions.length) return
+    void api.ai.cancel()
+    setActiveQuestionIdx(targetIdx)
+    const targetQ = extractedQuestions[targetIdx]!
+    const ctxId = `ctx-${Date.now()}`
+    activeContextIdRef.current = ctxId
+
+    const currentChapter = tasks.find((t) => t.id === activeTaskId)
+    const ctx: ActiveQuestionContext = {
+      contextId: ctxId,
+      platformId: activeId,
+      courseName: selectedCourseName,
+      courseId: null,
+      chapterId: activeTaskId,
+      chapterTitle: currentChapter?.title ?? null,
+      questionId: targetQ.id,
+      questionIndex: targetIdx,
+      totalQuestions: extractedQuestions.length,
+      questionType: targetQ.questionType,
+      stemText: targetQ.extractedText || '',
+      options: targetQ.options,
+      images: targetQ.images,
+      imageSource: null,
+      extractedAt: new Date().toISOString()
+    }
+    setQuestionContext(ctx)
+
+    setAiPromptText(formatQuestionPrompt(targetQ, targetIdx, extractedQuestions.length))
+    setAiStreamingText('')
+    setAiResult(null)
+    setAiError(null)
+
+    if (targetQ.images && targetQ.images.length > 0) {
+      setAiImagePreview(targetQ.images[0])
+      setImageInfo({ width: 0, height: 0, mode: 'embedded' })
+      setCaptureNotice('已自动选用该题目内嵌的高清原图')
+    } else {
+      setAiImagePreview(null)
+      setImageInfo(null)
+      setCaptureNotice(null)
+    }
+
+    setNotice(`已切换至第 ${targetIdx + 1} / ${extractedQuestions.length} 题`)
+  }, [extractedQuestions, activeTaskId, tasks, selectedCourseName, activeId, api])
+
+  const handleDrawerCapture = useCallback(async (mode: 'viewport' | 'full-question' = 'viewport') => {
     try {
-      setNotice('正在截取当前画面...')
-      const r = await api.browser.captureView(activeId)
+      setNotice(mode === 'full-question' ? '正在完整捕获当前长题（含跨视口区域）...' : '正在截取当前画面...')
+      const targetQid = questionContext?.questionId
+      const r = await api.browser.captureView({
+        platformId: activeId,
+        mode,
+        questionId: targetQid
+      })
       if (!r.ok || !r.data.dataUrl) {
         setNotice(`截屏失败: ${r.ok ? '未获取到画面' : r.error.message}`)
         return
       }
       setAiImagePreview(r.data.dataUrl)
+      setImageInfo({ width: r.data.width, height: r.data.height, mode: r.data.mode })
+      setCaptureNotice(r.data.notice ?? null)
+      if (questionContext) {
+        setQuestionContext((prev) => prev ? {
+          ...prev,
+          imageSource: r.data.mode === 'full-question' ? 'full_question' : 'viewport'
+        } : null)
+      }
       setDrawerTab('ai')
       setDrawerOpen(true)
       if (!aiPromptText.trim()) {
         setAiPromptText('请逐字识别图中的文字，并分析题目给出答案与解析。')
       }
-      setNotice('已截取当前课堂画面，可在发送前编辑调整问题')
-      pushActivity('截取当前课堂画面送入 AI')
+      setNotice(r.data.notice ?? (mode === 'full-question' ? '已完成长题完整截取，所有题干与选项已捕获' : '已截取当前课堂视口画面'))
+      pushActivity(mode === 'full-question' ? '截取长题完整画面送入 AI' : '截取当前课堂画面送入 AI')
     } catch (err) {
       setNotice(`截屏失败: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [activeId, api, aiPromptText, pushActivity])
+  }, [activeId, questionContext, api, aiPromptText, pushActivity])
+
+  const handleUseEmbeddedImage = useCallback((url: string) => {
+    setAiImagePreview(url)
+    setImageInfo({ width: 0, height: 0, mode: 'embedded' })
+    setCaptureNotice('已选用题目内嵌高清原图')
+    if (questionContext) {
+      setQuestionContext((prev) => prev ? { ...prev, imageSource: 'embedded' } : null)
+    }
+    setDrawerTab('ai')
+    setDrawerOpen(true)
+    setNotice('已选用题目内嵌的高清原图')
+  }, [questionContext])
 
   const handleDrawerPickImageFile = useCallback((file: File) => {
     const reader = new FileReader()
     reader.onload = (e) => {
       const dataUrl = e.target?.result as string
-      if (dataUrl) setAiImagePreview(dataUrl)
+      if (dataUrl) {
+        setAiImagePreview(dataUrl)
+        setImageInfo({ width: 0, height: 0, mode: 'file' })
+        setCaptureNotice('已加载本地图片')
+        if (questionContext) {
+          setQuestionContext((prev) => prev ? { ...prev, imageSource: 'file' } : null)
+        }
+      }
     }
     reader.readAsDataURL(file)
-  }, [])
+  }, [questionContext])
 
   const handleDrawerSubmit = useCallback(async () => {
     if (!aiPromptText.trim() && !aiImagePreview) return
@@ -628,6 +791,7 @@ export default function App(): JSX.Element {
     setAiResult(null)
     setAiError(null)
 
+    const submissionCtxId = activeContextIdRef.current
     const chosenModel = drawerAiModelId || (models[0]?.id ?? 'deepseek-flash')
     const isImage = Boolean(aiImagePreview)
     const systemPrompt = isImage
@@ -642,6 +806,11 @@ export default function App(): JSX.Element {
         imageDataUrl: aiImagePreview ?? null
       })
 
+      // 切换上下文保护：若在等待期间用户切换了章节或题目，抛弃旧响应，严禁串题
+      if (submissionCtxId && activeContextIdRef.current !== submissionCtxId) {
+        return
+      }
+
       if (res.ok) {
         if (res.data.cancelled) {
           setAiError('请求已由用户取消')
@@ -655,9 +824,12 @@ export default function App(): JSX.Element {
         setAiError(`生成失败: ${res.error.code} ${res.error.message}`)
       }
     } catch (err) {
+      if (submissionCtxId && activeContextIdRef.current !== submissionCtxId) return
       setAiError(`请求异常: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
-      setAiBusy(false)
+      if (!submissionCtxId || activeContextIdRef.current === submissionCtxId) {
+        setAiBusy(false)
+      }
     }
   }, [aiPromptText, aiImagePreview, drawerAiModelId, models, api, pushActivity])
 
@@ -668,12 +840,19 @@ export default function App(): JSX.Element {
   }, [api])
 
   const handleDrawerClearAll = useCallback(() => {
+    void api.ai.cancel()
+    activeContextIdRef.current = null
+    setQuestionContext(null)
+    setExtractedQuestions([])
+    setActiveQuestionIdx(0)
     setAiPromptText('')
     setAiImagePreview(null)
+    setImageInfo(null)
+    setCaptureNotice(null)
     setAiStreamingText('')
     setAiResult(null)
     setAiError(null)
-  }, [])
+  }, [api])
 
   /**
    * 首屏打开默认平台（测试台）。
@@ -1106,10 +1285,20 @@ export default function App(): JSX.Element {
             promptText: aiPromptText,
             onChangePromptText: setAiPromptText,
             imagePreview: aiImagePreview,
-            onClearImage: () => setAiImagePreview(null),
+            imageInfo,
+            captureNotice,
+            onClearImage: () => {
+              setAiImagePreview(null)
+              setImageInfo(null)
+              setCaptureNotice(null)
+              if (questionContext) {
+                setQuestionContext((prev) => prev ? { ...prev, imageSource: null } : null)
+              }
+            },
             onPickImageFile: handleDrawerPickImageFile,
             onExtractFromPage: handleDrawerExtract,
             onCaptureFromPage: handleDrawerCapture,
+            onUseEmbeddedImage: handleUseEmbeddedImage,
             onSubmit: handleDrawerSubmit,
             onCancel: handleDrawerCancel,
             onRegenerate: handleDrawerSubmit,
@@ -1117,7 +1306,10 @@ export default function App(): JSX.Element {
             streamingText: aiStreamingText,
             result: aiResult,
             error: aiError,
-            courseName: selectedCourseName
+            courseName: selectedCourseName,
+            questionContext,
+            onPrevQuestion: () => handleSelectQuestionIndex(activeQuestionIdx - 1),
+            onNextQuestion: () => handleSelectQuestionIndex(activeQuestionIdx + 1)
           }}
         />
       </div>

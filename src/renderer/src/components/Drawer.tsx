@@ -12,11 +12,16 @@ import {
   Check,
   RefreshCw,
   Trash2,
-  BookOpen
+  BookOpen,
+  ChevronLeft,
+  ChevronRight,
+  Image as ImageIcon,
+  Layers,
+  Info
 } from 'lucide-react'
 import { Card, Seg, Switch, Empty, CapChip, Notice } from '../components/ui'
 import { observedProgressPercent } from '@shared/video'
-import type { PlaybackObservation, AIModelInfo, AIResult } from '@shared/types'
+import type { PlaybackObservation, AIModelInfo, AIResult, ActiveQuestionContext } from '@shared/types'
 import { modelSupportsImage } from '@shared/deepseek'
 
 /** 提交模式。confirm 之外不提供无人值守自动提交。 */
@@ -31,10 +36,13 @@ export interface DrawerAiProps {
   promptText: string
   onChangePromptText: (text: string) => void
   imagePreview: string | null
+  imageInfo?: { width: number; height: number; mode: string } | null
+  captureNotice?: string | null
   onClearImage: () => void
   onPickImageFile: (file: File) => void
   onExtractFromPage: () => void
-  onCaptureFromPage: () => void
+  onCaptureFromPage: (mode?: 'viewport' | 'full-question') => void
+  onUseEmbeddedImage?: (url: string) => void
   onSubmit: () => void
   onCancel: () => void
   onRegenerate: () => void
@@ -43,6 +51,9 @@ export interface DrawerAiProps {
   result: AIResult | null
   error: string | null
   courseName?: string | null
+  questionContext?: ActiveQuestionContext | null
+  onPrevQuestion?: () => void
+  onNextQuestion?: () => void
 }
 
 export function Drawer({
@@ -146,33 +157,130 @@ export function Drawer({
             </div>
 
             {/* 一键快捷操作 */}
-            <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6 }}>
               <button
                 type="button"
                 className="btn btn-primary"
-                style={{ fontSize: 11.5, padding: '6px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}
+                style={{ fontSize: 11, padding: '6px 6px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}
                 onClick={aiProps.onExtractFromPage}
                 disabled={aiProps.busy}
                 data-testid="drawer-extract-btn"
                 title="从当前课堂网页中提取可见题目与选项"
               >
-                <Sparkles size={13} />
+                <Sparkles size={12} />
                 提取当前题
               </button>
               <button
                 type="button"
                 className="btn"
-                style={{ fontSize: 11.5, padding: '6px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}
-                onClick={aiProps.onCaptureFromPage}
+                style={{ fontSize: 11, padding: '6px 6px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}
+                onClick={() => aiProps.onCaptureFromPage('viewport')}
                 disabled={aiProps.busy}
                 data-testid="drawer-capture-btn"
-                title="截取当前课堂或视频画面作为待分析图像"
+                title="截取当前课堂或视频画面（可见视口区域）"
               >
-                <Camera size={13} />
-                截屏问 AI
+                <Camera size={12} />
+                截当前视口
               </button>
+              <button
+                type="button"
+                className="btn"
+                style={{ fontSize: 11, padding: '6px 6px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}
+                onClick={() => aiProps.onCaptureFromPage('full-question')}
+                disabled={aiProps.busy}
+                data-testid="drawer-capture-full-btn"
+                title="定位并完整截取当前题目区域（含跨视口下半部分与选项）"
+              >
+                <Layers size={12} />
+                完整长题截图
+              </button>
+              {aiProps.questionContext?.images && aiProps.questionContext.images.length > 0 ? (
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ fontSize: 11, padding: '6px 6px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}
+                  onClick={() => aiProps.onUseEmbeddedImage?.(aiProps.questionContext!.images![0])}
+                  disabled={aiProps.busy}
+                  data-testid="drawer-embedded-img-btn"
+                  title="使用题目 DOM 中嵌入的原图（公式、示意图或高清原图）"
+                >
+                  <ImageIcon size={12} />
+                  使用内嵌原图
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  style={{ fontSize: 11, padding: '6px 6px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}
+                  onClick={() => aiProps.onCaptureFromPage('viewport')}
+                  disabled={aiProps.busy}
+                  title="重新截取可见画面"
+                >
+                  <RefreshCw size={12} />
+                  重新截图
+                </button>
+              )}
             </div>
           </Card>
+
+          {/* 1.5 绑定题目上下文元数据卡片 */}
+          {aiProps.questionContext && (
+            <Card>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span className="chip chip-tint" style={{ fontSize: 10 }}>
+                    第 {aiProps.questionContext.questionIndex + 1} / {aiProps.questionContext.totalQuestions} 题
+                  </span>
+                  <span className="chip" style={{ fontSize: 10 }}>
+                    {aiProps.questionContext.questionType === 'single'
+                      ? '单选题'
+                      : aiProps.questionContext.questionType === 'multiple'
+                        ? '多选题'
+                        : aiProps.questionContext.questionType === 'judgement'
+                          ? '判断题'
+                          : '主观/填空题'}
+                  </span>
+                </div>
+                {aiProps.questionContext.totalQuestions > 1 && (
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      style={{ padding: '2px 6px', fontSize: 11 }}
+                      disabled={aiProps.busy || aiProps.questionContext.questionIndex === 0}
+                      onClick={aiProps.onPrevQuestion}
+                      data-testid="drawer-prev-question"
+                      title="切换上一题"
+                    >
+                      <ChevronLeft size={12} />
+                      上一题
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      style={{ padding: '2px 6px', fontSize: 11 }}
+                      disabled={aiProps.busy || aiProps.questionContext.questionIndex >= aiProps.questionContext.totalQuestions - 1}
+                      onClick={aiProps.onNextQuestion}
+                      data-testid="drawer-next-question"
+                      title="切换下一题"
+                    >
+                      下一题
+                      <ChevronRight size={12} />
+                    </button>
+                  </div>
+                )}
+              </div>
+              <div style={{ fontSize: 10.5, color: 'var(--ch-text-2)', marginTop: 6, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                {aiProps.questionContext.chapterTitle && (
+                  <div>当前章节：{aiProps.questionContext.chapterTitle}</div>
+                )}
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <span>题目ID: {aiProps.questionContext.questionId}</span>
+                  <span>提取时间: {new Date(aiProps.questionContext.extractedAt).toLocaleTimeString()}</span>
+                </div>
+              </div>
+            </Card>
+          )}
 
           {/* 2. 待分析题目与图片预览区 */}
           <Card>
@@ -181,33 +289,65 @@ export function Drawer({
                 style={{
                   marginBottom: 10,
                   display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
+                  flexDirection: 'column',
+                  gap: 6,
                   padding: 8,
                   borderRadius: 'var(--r-block)',
                   background: 'var(--ch-subtle)',
                   border: '1px solid var(--ch-border)'
                 }}
               >
-                <img
-                  src={aiProps.imagePreview}
-                  alt="待分析画面预览"
-                  style={{ width: 68, height: 48, objectFit: 'cover', borderRadius: 6 }}
-                  data-testid="drawer-image-preview"
-                />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 11, fontWeight: 500 }}>已附带截图</div>
-                  <div style={{ fontSize: 10, color: 'var(--ch-text-2)' }}>发送前可编辑右下方问题</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <img
+                    src={aiProps.imagePreview}
+                    alt="待分析画面预览"
+                    style={{ width: 68, height: 48, objectFit: 'cover', borderRadius: 6 }}
+                    data-testid="drawer-image-preview"
+                  />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 11, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 4 }}>
+                      已附带截图
+                      {aiProps.imageInfo && (
+                        <span className="chip" style={{ fontSize: 9.5 }}>
+                          {aiProps.imageInfo.width}×{aiProps.imageInfo.height} ({aiProps.imageInfo.mode === 'full-question' ? '长截屏' : '视口'})
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 10, color: 'var(--ch-text-2)' }}>发送前可编辑下方问题与选项</div>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    style={{ padding: '4px 6px', fontSize: 11 }}
+                    onClick={aiProps.onClearImage}
+                    disabled={aiProps.busy}
+                  >
+                    移除
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  style={{ padding: '4px 6px', fontSize: 11 }}
-                  onClick={aiProps.onClearImage}
-                  disabled={aiProps.busy}
-                >
-                  移除
-                </button>
+
+                {/* 截图过高或长截屏提示 */}
+                {(aiProps.captureNotice || (aiProps.imageInfo && aiProps.imageInfo.height > 1000)) && (
+                  <div
+                    style={{
+                      fontSize: 10.5,
+                      color: 'var(--ch-text-1)',
+                      background: 'rgba(234, 179, 8, 0.1)',
+                      border: '1px solid rgba(234, 179, 8, 0.3)',
+                      borderRadius: 4,
+                      padding: '4px 6px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 4
+                    }}
+                    data-testid="drawer-capture-notice"
+                  >
+                    <Info size={11} style={{ color: '#eab308', flexShrink: 0 }} />
+                    <span>
+                      {aiProps.captureNotice || `长截图已捕获完整题干与选项（${aiProps.imageInfo?.height}px），题干已提取至编辑框。`}
+                    </span>
+                  </div>
+                )}
               </div>
             )}
 

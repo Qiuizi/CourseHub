@@ -314,10 +314,55 @@ export interface ClassroomQuestion {
   questionType: QuestionType
   extractedText: string | null
   options: readonly QuestionOption[]
+  /** 题干或选项中嵌入的原始图片链接 */
+  images?: readonly string[]
+  /** 题目在页面中的尺寸与视口信息（用于长截图与滚动定位） */
+  dimensions?: {
+    height: number
+    width: number
+    scrollHeight: number
+    isOverflow: boolean
+  }
   /** 仅在平台确实提供可靠结束时间时填写 */
   endsAt: string | null
   detectedAt: string
   source: 'dom' | 'intercepted_payload' | 'screenshot' | 'unknown'
+}
+
+/** 绑定在 AI 抽屉会话中的题目与课程上下文 */
+export interface ActiveQuestionContext {
+  contextId: string
+  platformId: PlatformId
+  courseName: string | null
+  courseId?: string | null
+  chapterId?: string | null
+  chapterTitle?: string | null
+  questionId: string
+  questionIndex: number
+  totalQuestions: number
+  questionType?: QuestionType
+  stemText: string
+  options?: readonly QuestionOption[]
+  images?: readonly string[]
+  imageSource?: 'viewport' | 'full_question' | 'embedded' | 'clipboard' | 'file' | null
+  extractedAt: string
+}
+
+export type CaptureMode = 'viewport' | 'full-question' | 'full-page'
+
+export interface CaptureViewOptions {
+  platformId: PlatformId
+  mode?: CaptureMode
+  questionId?: string
+}
+
+export interface CaptureViewResult {
+  dataUrl: string
+  width: number
+  height: number
+  mode: CaptureMode
+  isOverflow?: boolean
+  notice?: string | null
 }
 
 /**

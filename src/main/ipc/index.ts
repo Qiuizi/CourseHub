@@ -5,7 +5,7 @@
  * 远程平台页面拿不到任何 preload，因此不可能调用这些通道。
  */
 
-import { app, BrowserWindow, ipcMain, session } from 'electron'
+import { app, BrowserWindow, ipcMain, session, nativeImage } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
@@ -256,15 +256,220 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
   })
 
   handle('browser:capture-view', async (_e, payload) => {
-    const p = payload as { platformId?: unknown }
+    const p = payload as {
+      platformId?: unknown
+      mode?: unknown
+      questionId?: unknown
+    }
     const id = platformId(p?.platformId)
+    const mode = (p?.mode === 'full-question' || p?.mode === 'full-page') ? p.mode : 'viewport'
+    const targetQid = typeof p?.questionId === 'string' ? p.questionId : undefined
+
     const b = deps.browsers.get(id)
     const wc = b?.webContents
     if (!wc || wc.isDestroyed()) throw new CodedError('NOT_FOUND', '平台视图未打开')
-    const img = await wc.capturePage()
-    const dataUrl = img.toDataURL()
-    const size = img.getSize()
-    return { dataUrl, width: size.width, height: size.height }
+
+    let dataUrl = ''
+    let width = 0
+    let height = 0
+    let isOverflow = false
+    let notice: string | null = null
+
+    interface QuestionDomMetrics {
+      found: boolean
+      height: number
+      width: number
+      scrollHeight: number
+      isTall: boolean
+      dpr: number
+      top: number
+    }
+
+    /** CDP 全页截图辅助函数（含超时与自动 detach）*/
+    const cdpFullPageScreenshot = async (): Promise<string | null> => {
+      let attached = false
+      try {
+        if (!wc.debugger.isAttached()) {
+          wc.debugger.attach('1.3')
+          attached = true
+        }
+        const cdpPromise = wc.debugger.sendCommand('Page.captureScreenshot', {
+          format: 'png',
+          captureBeyondViewport: true
+        }) as Promise<{ data: string }>
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('CDP screenshot timeout')), 4000)
+        )
+        const screenshot = await Promise.race([cdpPromise, timeoutPromise])
+        return screenshot.data
+      } catch {
+        return null
+      } finally {
+        if (attached && wc.debugger.isAttached()) {
+          try { wc.debugger.detach() } catch {}
+        }
+      }
+    }
+
+    if (mode === 'full-page') {
+      const cdpData = await cdpFullPageScreenshot()
+      if (cdpData) {
+        const buf = Buffer.from(cdpData, 'base64')
+        const img = nativeImage.createFromBuffer(buf)
+        const size = img.getSize()
+        dataUrl = `data:image/png;base64,${cdpData}`
+        width = size.width
+        height = size.height
+        isOverflow = height > 1000
+        if (isOverflow) {
+          notice = `完整长截屏已生成（高度 ${height}px），已涵盖页面全部题目与选项。`
+        }
+      } else {
+        const img = await wc.capturePage()
+        dataUrl = img.toDataURL()
+        const size = img.getSize()
+        width = size.width
+        height = size.height
+      }
+    } else if (mode === 'full-question' && targetQid) {
+      // 遍历全部 frame，寻找指定题目节点并将其滚动到视口顶部
+      const frames: Electron.WebFrameMain[] = []
+      const collect = (f: Electron.WebFrameMain) => {
+        frames.push(f)
+        for (const ch of f.frames) collect(ch)
+      }
+      collect(wc.mainFrame)
+
+      let nodeMetrics: QuestionDomMetrics | null = null
+      let foundInCrossOrigin = false
+
+      for (const frame of frames) {
+        try {
+          const res = (await frame.executeJavaScript(`(() => {
+            const qid = ${JSON.stringify(targetQid)};
+            // 多种 ID 属性兼容超星、雨课堂等平台
+            const el = document.getElementById(qid) ||
+              document.querySelector('[data-id="' + CSS.escape(qid) + '"]') ||
+              document.querySelector('[data-questionid="' + CSS.escape(qid) + '"]') ||
+              document.querySelector('[data-qid="' + CSS.escape(qid) + '"]') ||
+              document.querySelector('[data-ch-question="' + CSS.escape(qid) + '"]') ||
+              document.querySelector('#' + CSS.escape(qid));
+            if (!el) return { found: false };
+
+            // 先展开可能折叠的题目内容（如 display:none 的子元素）
+            const collapsed = el.querySelectorAll('[style*="display: none"], [style*="display:none"]');
+            collapsed.forEach(function(c) { c.style.display = ''; });
+
+            el.scrollIntoView({ behavior: 'instant', block: 'start' });
+            // 额外向上偏移 10px，避免被 sticky header 遮住
+            window.scrollBy(0, -10);
+
+            const rect = el.getBoundingClientRect();
+            const scrollH = el.scrollHeight || rect.height;
+            const dpr = window.devicePixelRatio || 1;
+            // 超出视口高度的 85% 就算"长题"，需要特殊截图
+            const viewportH = window.innerHeight || 800;
+            const isTall = rect.height > (viewportH * 0.85) || scrollH > (viewportH * 0.85);
+            return {
+              found: true,
+              height: Math.round(rect.height),
+              width: Math.round(rect.width),
+              scrollHeight: Math.round(scrollH),
+              isTall,
+              dpr,
+              top: Math.round(rect.top)
+            };
+          })()`, true)) as QuestionDomMetrics | null
+          if (res?.found) {
+            nodeMetrics = res
+            break
+          }
+        } catch (frameErr) {
+          // 跨域 iframe 会抛出访问拒绝错误，记录标记
+          const msg = frameErr instanceof Error ? frameErr.message : String(frameErr)
+          if (msg.includes('cross-origin') || msg.includes('CORS') || msg.includes('Blocked')) {
+            foundInCrossOrigin = true
+          }
+        }
+      }
+
+      if (!nodeMetrics?.found && foundInCrossOrigin) {
+        // 无法穿透跨域 frame，提示用户截可见视口
+        notice = '⚠️ 该题目在跨域 iframe 中，无法直接定位节点。已截取当前可见视口，请手动滚动到题目区域后重新截图。'
+      }
+
+      // 等待 DOM 渲染与布局稳定（增加到 300ms，保证 React/Vue 渲染完成）
+      await new Promise((r) => setTimeout(r, 300))
+
+      if (nodeMetrics?.isTall) {
+        // 超出视口的长题：优先采用 CDP 全页截图（含 captureBeyondViewport）
+        const cdpData = await cdpFullPageScreenshot()
+        if (cdpData) {
+          const buf = Buffer.from(cdpData, 'base64')
+          const img = nativeImage.createFromBuffer(buf)
+          const size = img.getSize()
+          dataUrl = `data:image/png;base64,${cdpData}`
+          width = size.width
+          height = size.height
+          isOverflow = true
+          const dpr = nodeMetrics.dpr || 1
+          notice = `超视口长题已完整截取（逻辑高度 ${nodeMetrics.scrollHeight}px，DPI ${dpr}x，图片实际 ${height}px）。题干与所有选项均已捕获。`
+        } else {
+          // CDP 失败（如跨域 webview），降级为视口截图 + 文本提示
+          const img = await wc.capturePage()
+          const pngData = img.toPNG()
+          // 检测全黑截图（像素全为 0）
+          const isBlack = pngData.length > 0 && pngData.subarray(0, 200).every(b => b === 0)
+          if (!isBlack) {
+            dataUrl = img.toDataURL()
+          }
+          const size = img.getSize()
+          width = size.width
+          height = size.height
+          isOverflow = true
+          notice = `题目高度超出视口（${nodeMetrics.scrollHeight}px），CDP 截图失败，已截取当前可见区域。` +
+            `题干文本已完整提取至编辑框，可直接发送分析。`
+        }
+      } else if (nodeMetrics?.found) {
+        // 题目在视口内，普通截图即可
+        const img = await wc.capturePage()
+        const pngData = img.toPNG()
+        const isBlack = pngData.length > 0 && pngData.subarray(0, 200).every(b => b === 0)
+        dataUrl = isBlack ? '' : img.toDataURL()
+        const size = img.getSize()
+        width = size.width
+        height = size.height
+        isOverflow = false
+        if (isBlack) {
+          notice = '⚠️ 截图全黑（可能是 GPU 渲染延迟），请稍后重试或使用「完整长题截图」。'
+        }
+      } else {
+        // 未找到题目节点，截当前视口
+        const img = await wc.capturePage()
+        dataUrl = img.toDataURL()
+        const size = img.getSize()
+        width = size.width
+        height = size.height
+        isOverflow = false
+        notice = `⚠️ 未在当前页面找到题目节点（ID: ${targetQid}），已截取当前视口。` +
+          (foundInCrossOrigin ? '（题目可能在跨域 iframe 中）' : '（页面可能未完全加载）')
+      }
+    } else {
+      // 默认：当前可见视口快速截图
+      const img = await wc.capturePage()
+      const pngData = img.toPNG()
+      const isBlack = pngData.length > 0 && pngData.subarray(0, 200).every(b => b === 0)
+      dataUrl = isBlack ? '' : img.toDataURL()
+      const size = img.getSize()
+      width = size.width
+      height = size.height
+      isOverflow = false
+      if (isBlack) {
+        notice = '⚠️ 截图全黑（GPU 渲染延迟），请稍后重试截图。'
+      }
+    }
+
+    return { dataUrl, width, height, mode, isOverflow, notice }
   })
 
   /* -------------------------------- 签到 -------------------------------- */
@@ -926,7 +1131,10 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     if (!wc) throw new CodedError('NOT_FOUND', '平台视图未打开')
     const res = await extractQuestions(wc, id)
     if (res.error) throw new CodedError('NOT_FOUND', res.error)
-    return { questions: res.questions as ClassroomQuestion[] }
+    return {
+      questions: res.questions as ClassroomQuestion[],
+      debugInfo: res.debugInfo
+    }
   })
 
   handle('question:preview-test-action', async (_e, payload) => {

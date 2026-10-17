@@ -34,6 +34,13 @@ export interface RawQuestionDom {
   control: 'radio' | 'checkbox' | 'boolean' | 'text' | 'none'
   text: string | null
   options: readonly { key: string; label: string }[]
+  images?: readonly string[]
+  dimensions?: {
+    height: number
+    width: number
+    scrollHeight: number
+    isOverflow: boolean
+  }
   multipleAllowed?: boolean
 }
 
@@ -69,6 +76,8 @@ export function normalizeQuestion(
     questionType: questionTypeFromControl(raw.control),
     extractedText: raw.text && raw.text.trim().length > 0 ? raw.text.trim() : null,
     options,
+    images: Array.isArray(raw.images) && raw.images.length > 0 ? raw.images : undefined,
+    dimensions: raw.dimensions,
     endsAt: null, // 平台未提供可靠结束时间时保持 null
     detectedAt,
     source: 'dom'
