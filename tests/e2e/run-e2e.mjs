@@ -1079,6 +1079,21 @@ async function main() {
       workbenchCheck?.hasSearchInput && workbenchCheck?.hasPlatformPills,
       JSON.stringify(workbenchCheck)
     )
+
+    // 雨课堂平台登录入口与多服务器配置验证
+    const yktLoginCheck = await win.evaluate(async () => {
+      const list = await window.coursehub.platform.list()
+      const yktCfg = list.ok ? list.data.find((p) => p.id === 'yuketang') : null
+      return {
+        homeUrl: yktCfg?.homeUrl,
+        isWebLogin: yktCfg?.homeUrl === 'https://www.yuketang.cn/web'
+      }
+    })
+    record(
+      'v0.4.0-5：雨课堂平台浏览器登录入口（配置直达官方 web 登录入口 https://www.yuketang.cn/web）',
+      yktLoginCheck?.isWebLogin,
+      JSON.stringify(yktLoginCheck)
+    )
   } catch (e) {
     record('E2E 执行过程', false, e instanceof Error ? e.message : String(e))
   } finally {

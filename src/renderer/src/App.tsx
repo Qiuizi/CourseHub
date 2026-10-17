@@ -266,7 +266,16 @@ export default function App(): JSX.Element {
                 ? 'expired'
                 : 'unknown'
           setPlatforms((prev) =>
-            prev.map((p) => (p.id === id ? { ...p, auth: authState } : p))
+            prev.map((p) => {
+              if (p.id === id) {
+                if (p.auth !== 'authenticated' && authState === 'authenticated') {
+                  setNotice(`【${p.name}】已成功识别登录状态！`)
+                  pushActivity(`${p.name} 会话已建立`)
+                }
+                return { ...p, auth: authState }
+              }
+              return p
+            })
           )
         }
       } catch {
@@ -1018,6 +1027,27 @@ export default function App(): JSX.Element {
                   <Camera size={13} />
                   截屏分析
                 </button>
+                {activeId === 'yuketang' && (
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    <span style={{ fontSize: 11, color: 'var(--ch-text-2)' }}>入口:</span>
+                    <select
+                      className="select"
+                      style={{ padding: '2px 6px', fontSize: 11, height: 26 }}
+                      onChange={(e) => {
+                        const targetUrl = e.target.value
+                        void api.browser.navigate('yuketang', targetUrl)
+                        setNotice(`已切换雨课堂入口：${targetUrl}`)
+                      }}
+                      defaultValue="https://www.yuketang.cn/web"
+                      title="切换雨课堂服务器入口（通用版/清华荷塘版/长江版/黄河版）"
+                    >
+                      <option value="https://www.yuketang.cn/web">标准版 (www)</option>
+                      <option value="https://pro.yuketang.cn/web/">荷塘版 (pro)</option>
+                      <option value="https://changjiang.yuketang.cn/web/">长江版 (changjiang)</option>
+                      <option value="https://huanghe.yuketang.cn/web/">黄河版 (huanghe)</option>
+                    </select>
+                  </div>
+                )}
                 {activeId === 'testbed' ? (
                   <>
                     <button
@@ -1050,12 +1080,17 @@ export default function App(): JSX.Element {
                     type="button"
                     className="btn"
                     onClick={async () => {
-                      await openPlatform(activeId)
+                      if (activeId === 'yuketang') {
+                        await api.browser.navigate('yuketang', 'https://www.yuketang.cn/web')
+                        setNotice('已直达雨课堂官方登录页')
+                      } else {
+                        await openPlatform(activeId)
+                      }
                     }}
                     title={`打开 ${current?.name ?? activeId} 官方登录/主页`}
                   >
                     <Globe size={13} />
-                    前往官方页面
+                    {activeId === 'yuketang' ? '官方登录页' : '前往官方页面'}
                   </button>
                 )}
                 <button

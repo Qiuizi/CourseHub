@@ -59,9 +59,13 @@ export const PLATFORM_CONFIGS: readonly PlatformConfig[] = [
       'https://www.yuketang.cn',
       'https://yuketang.cn',
       'https://pro.yuketang.cn',
-      'https://changjiang.yuketang.cn'
+      'https://changjiang.yuketang.cn',
+      'https://huanghe.yuketang.cn',
+      'https://open.weixin.qq.com',
+      'https://xuetangx.com'
     ],
-    homeUrl: 'https://www.yuketang.cn/'
+    // 关键优化：直达官方网页版登录入口；页面原生包含微信扫码、账号密码登录、协议勾选与高校服务器切换
+    homeUrl: 'https://www.yuketang.cn/web'
   },
   {
     id: 'zhihuishu',

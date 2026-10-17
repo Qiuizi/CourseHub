@@ -47,14 +47,15 @@ export const KNOWN_WS_OPS = new Set([
   'problemfinished'
 ])
 
-export function buildYktCourseListRequest(): { url: string; method: string } {
+export function buildYktCourseListRequest(baseUrl = 'https://www.yuketang.cn'): { url: string; method: string } {
+  const cleanBase = baseUrl.replace(/\/+$/, '')
   return {
-    url: YUKETANG_ENDPOINTS.courseList,
+    url: `${cleanBase}/v2/api/web/courses/list?identity=2`,
     method: 'GET'
   }
 }
 
-export function parseYktCourseListResponse(raw: unknown): {
+export function parseYktCourseListResponse(raw: unknown, baseUrl = 'https://www.yuketang.cn'): {
   ok: boolean
   courses: YuketangCourse[]
   error?: string
@@ -83,7 +84,8 @@ export function parseYktCourseListResponse(raw: unknown): {
     const coverUrl = typeof c.cover === 'string' ? c.cover : null
     const courseId = String(c.course_id ?? c.courseId ?? id)
     const classId = String(c.classroom_id ?? id)
-    const courseUrl = `https://www.yuketang.cn/v2/web/studentlog/${classId}`
+    const cleanBase = baseUrl.replace(/\/+$/, '')
+    const courseUrl = `${cleanBase}/v2/web/studentlog/${classId}`
 
     courses.push({
       classroomCourseId: id,
@@ -101,9 +103,10 @@ export function parseYktCourseListResponse(raw: unknown): {
   return { ok: true, courses }
 }
 
-export function buildOnLessonRequest(): { url: string; method: string } {
+export function buildOnLessonRequest(baseUrl = 'https://www.yuketang.cn'): { url: string; method: string } {
+  const cleanBase = baseUrl.replace(/\/+$/, '')
   return {
-    url: YUKETANG_ENDPOINTS.onLesson,
+    url: `${cleanBase}/api/v3/classroom/on-lesson-upcoming-exam`,
     method: 'GET'
   }
 }
@@ -171,43 +174,78 @@ export function parseWsAppMessage(rawText: string): WsAppMessage | null {
 import type { SignInEvent, ClassroomActivityItem, ChapterNode } from '@shared/types'
 import type { SessionLike } from './chaoxing'
 
-/** 探测雨课堂 Session 登录状态 */
+/** 探测雨课堂 Session 登录状态，支持通用版及各高校专有独立版（荷塘、长江、黄河等） */
 export async function detectYuketangAuth(ses: SessionLike): Promise<{
   state: 'unauthenticated' | 'authenticated' | 'expired' | 'error'
   evidence: string | null
+  serverBaseUrl?: string
 }> {
   try {
-    const cookies = await ses.cookies.get({ domain: 'yuketang.cn' }).catch(() => [])
-    const proCookies = await ses.cookies.get({ domain: 'pro.yuketang.cn' }).catch(() => [])
-    const all = [...cookies, ...proCookies]
+    const domainCandidates: Array<{ domain: string; base: string }> = [
+      { domain: 'pro.yuketang.cn', base: 'https://pro.yuketang.cn' },
+      { domain: 'changjiang.yuketang.cn', base: 'https://changjiang.yuketang.cn' },
+      { domain: 'huanghe.yuketang.cn', base: 'https://huanghe.yuketang.cn' },
+      { domain: 'yuketang.cn', base: 'https://www.yuketang.cn' }
+    ]
 
-    // 关键：sessionid 与 login_user_id 是雨课堂认证核心（csrftoken 在未登录匿名访问时也会下发）
-    const hasAuthCookie = all.some((c) =>
-      ['sessionid', 'login_user_id', 'uvbe'].some((k) =>
-        c.name.toLowerCase() === k.toLowerCase() || c.name.toLowerCase().includes(k.toLowerCase())
+    let detectedBaseUrl = 'https://www.yuketang.cn'
+    let hasAuthCookie = false
+
+    for (const item of domainCandidates) {
+      const cookies = await ses.cookies.get({ domain: item.domain }).catch(() => [])
+      const matched = cookies.some((c) =>
+        ['sessionid', 'login_user_id', 'uvbe'].some((k) =>
+          c.name.toLowerCase() === k.toLowerCase() || c.name.toLowerCase().includes(k.toLowerCase())
+        )
       )
-    )
-    if (!hasAuthCookie) {
-      return { state: 'unauthenticated', evidence: '未在内置浏览器中检测到雨课堂登录会话（sessionid）' }
+      if (matched) {
+        hasAuthCookie = true
+        detectedBaseUrl = item.base
+        break
+      }
     }
 
-    const courseReq = buildYktCourseListRequest()
+    if (!hasAuthCookie) {
+      return {
+        state: 'unauthenticated',
+        evidence: '未在内置浏览器中检测到雨课堂登录会话（sessionid）',
+        serverBaseUrl: detectedBaseUrl
+      }
+    }
+
+    const courseReq = buildYktCourseListRequest(detectedBaseUrl)
     const resp = await ses.fetch(courseReq.url, { method: courseReq.method })
     if (resp.status === 401 || resp.status === 403) {
-      return { state: 'expired', evidence: '雨课堂登录凭证已失效（HTTP 401/403）' }
+      return {
+        state: 'expired',
+        evidence: '雨课堂登录凭证已失效（HTTP 401/403）',
+        serverBaseUrl: detectedBaseUrl
+      }
     }
     const json = (await resp.json().catch(() => null)) as Record<string, unknown> | null
     if (json && typeof json === 'object') {
       const code = typeof json.code === 'number' ? json.code : null
       const errcode = typeof json.errcode === 'number' ? json.errcode : null
       if (code === 0 || errcode === 0) {
-        return { state: 'authenticated', evidence: '雨课堂登录会话有效' }
+        return {
+          state: 'authenticated',
+          evidence: '雨课堂登录会话有效',
+          serverBaseUrl: detectedBaseUrl
+        }
       }
       if (errcode === 401002 || code === 401 || code === 403 || code === 50000 || json.msg === 'UNAUTHENTICATED') {
-        return { state: 'expired', evidence: '雨课堂会话已超时或未登录，请在内置浏览器登录' }
+        return {
+          state: 'expired',
+          evidence: '雨课堂会话已超时或未登录，请在内置浏览器登录',
+          serverBaseUrl: detectedBaseUrl
+        }
       }
     }
-    return { state: 'unauthenticated', evidence: '无法验证雨课堂身份状态' }
+    return {
+      state: 'unauthenticated',
+      evidence: '无法验证雨课堂身份状态',
+      serverBaseUrl: detectedBaseUrl
+    }
   } catch (e) {
     return { state: 'error', evidence: e instanceof Error ? e.message : String(e) }
   }
@@ -225,10 +263,11 @@ export async function fetchYuketangCourses(ses: SessionLike): Promise<{
     return { ok: false, state: auth.state, courses: [], error: auth.evidence ?? '未登录雨课堂' }
   }
 
-  const req = buildYktCourseListRequest()
+  const baseUrl = auth.serverBaseUrl || 'https://www.yuketang.cn'
+  const req = buildYktCourseListRequest(baseUrl)
   const resp = await ses.fetch(req.url, { method: req.method })
   const json = (await resp.json().catch(() => null)) as unknown
-  const parsed = parseYktCourseListResponse(json)
+  const parsed = parseYktCourseListResponse(json, baseUrl)
   return {
     ok: parsed.ok,
     state: parsed.ok ? 'supported' : 'error',
@@ -270,7 +309,8 @@ export async function fetchYuketangSignIns(ses: SessionLike): Promise<{
     }
   }
 
-  const req = buildOnLessonRequest()
+  const baseUrl = auth.serverBaseUrl || 'https://www.yuketang.cn'
+  const req = buildOnLessonRequest(baseUrl)
   const resp = await ses.fetch(req.url, { method: req.method })
   const json = (await resp.json().catch(() => null)) as unknown
   const onLesson = parseOnLessonResponse(json)
@@ -285,7 +325,7 @@ export async function fetchYuketangSignIns(ses: SessionLike): Promise<{
       title: `${onLesson.status.courseName || '课堂互动'} · 正在上课（进入课堂签到）`,
       startAt: new Date().toISOString(),
       endAt: null,
-      sourceUrl: `https://www.yuketang.cn/v2/web/studentlog/${onLesson.status.lessonId}`,
+      sourceUrl: `${baseUrl}/v2/web/studentlog/${onLesson.status.lessonId}`,
       fetchedAt: new Date().toISOString(),
       status: 'open',
       statusSource: 'provider_api',
@@ -335,7 +375,8 @@ export async function fetchYuketangActivities(ses: SessionLike): Promise<{
     }
   }
 
-  const req = buildOnLessonRequest()
+  const baseUrl = auth.serverBaseUrl || 'https://www.yuketang.cn'
+  const req = buildOnLessonRequest(baseUrl)
   const resp = await ses.fetch(req.url, { method: req.method })
   const json = (await resp.json().catch(() => null)) as Record<string, unknown> | null
   const onLesson = parseOnLessonResponse(json)
@@ -353,7 +394,7 @@ export async function fetchYuketangActivities(ses: SessionLike): Promise<{
       status: 'open',
       startAt: new Date().toISOString(),
       endAt: null,
-      sourceUrl: `https://www.yuketang.cn/v2/web/studentlog/${onLesson.status.lessonId}`,
+      sourceUrl: `${baseUrl}/v2/web/studentlog/${onLesson.status.lessonId}`,
       fetchedAt: new Date().toISOString(),
       locationRequired: false,
       locationText: null,
@@ -379,7 +420,7 @@ export async function fetchYuketangActivities(ses: SessionLike): Promise<{
       status: 'pending',
       startAt: typeof exam.start_time === 'string' ? exam.start_time : null,
       endAt: typeof exam.end_time === 'string' ? exam.end_time : null,
-      sourceUrl: `https://www.yuketang.cn/v2/web/studentlog/${exam.classroom_id ?? ''}`,
+      sourceUrl: `${baseUrl}/v2/web/studentlog/${exam.classroom_id ?? ''}`,
       fetchedAt: new Date().toISOString(),
       locationRequired: false,
       locationText: null,
