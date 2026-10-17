@@ -24,6 +24,8 @@ asar: true
 # 避免 electron-builder 因缺少 git 仓库而在 updateInfo 阶段报错。
 publish: null
 
+npmRebuild: false
+
 win:
   target:
     - target: dir
