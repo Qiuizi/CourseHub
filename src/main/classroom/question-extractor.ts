@@ -63,24 +63,33 @@ const EXTRACT_SCRIPT = `(() => {
     return { questions, _debug: { source: 'testbed', frameUrl: location.href, candidateCount: nodes.length } };
   }
 
-  // 2. 超星学习通及主流在线教育作业/课堂练习 DOM 结构
+  // 2. 超星学习通、雨课堂及主流在线教育作业/课堂练习 DOM 结构
   // 选择器按精确程度从高到低排列，避免误匹配容器
   const CANDIDATE_SELECTORS = [
     '.TiMu',
     'div[class*="TiMu"]',
     '.questionLi',
     '.question-item',
+    '.problem-item',
+    '.problem-card',
+    '.problem-content',
     '.subject-item',
     '.quesItem',
     '.questionRoot',
+    '.quiz-wrapper',
+    '.quiz-item',
+    '.exercise-item',
     '.testpaper_content .mark_item',
     '.mark_item',
     '.stem_wrap',
+    '[class*="problem_item"]',
+    '[class*="problemItem"]',
     '[class*="question_item"]',
     '[class*="subject_item"]',
     '[class*="quesItem"]',
     '[class*="questionWrap"]',
-    '[class*="questionItem"]'
+    '[class*="questionItem"]',
+    '[data-problem-id]'
   ].join(', ');
 
   let qNodes = Array.from(document.querySelectorAll(CANDIDATE_SELECTORS));
@@ -100,6 +109,15 @@ const EXTRACT_SCRIPT = `(() => {
       ? document.querySelector('h3').textContent.slice(0, 60) : null
   };
 
+  const simpleHash = (str) => {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) - hash) + str.charCodeAt(i);
+      hash |= 0;
+    }
+    return (hash >>> 0).toString(36);
+  };
+
   const questions = [];
   const seenIds = new Set();
 
@@ -112,22 +130,15 @@ const EXTRACT_SCRIPT = `(() => {
     );
     if (innerQ) continue;
 
-    const rawId = (
-      node.getAttribute('id') ||
-      node.getAttribute('data-id') ||
-      node.getAttribute('data-questionid') ||
-      node.getAttribute('data-qid') ||
-      ('q-' + (idx + 1))
-    );
-    if (seenIds.has(rawId)) continue;
-    seenIds.add(rawId);
-
     // 题干提取：按优先级逐一尝试 STEM_SELECTORS
     const STEM_SELECTORS = [
       '.Zy_TItle', '.clearfix', '.stem', '.stem_wrap',
+      '.problem-title', '.problem-body', '.problem__content', '.problem-desc',
+      '.quiz-title', '.exercise-title',
       '.questionTitle', '.question_title', '.questionStem', '.ques_stem',
       '.mark_item_stem', 'p.stem', '.title',
-      'h3', '[class*="title"]', '[class*="stem"]', '[class*="question_text"]'
+      'h3', '[class*="problem-title"]', '[class*="problem_title"]',
+      '[class*="title"]', '[class*="stem"]', '[class*="question_text"]'
     ];
     let titleEl = null;
     for (var si = 0; si < STEM_SELECTORS.length; si++) {
@@ -147,6 +158,23 @@ const EXTRACT_SCRIPT = `(() => {
       stemText = clean(clone.textContent);
     }
 
+    const explicitId = (
+      node.getAttribute('id') ||
+      node.getAttribute('data-id') ||
+      node.getAttribute('data-questionid') ||
+      node.getAttribute('data-qid') ||
+      node.getAttribute('data-problem-id') ||
+      node.getAttribute('data-problem')
+    );
+
+    // 复合稳定标识：无显式 ID 时结合路径与题干生成，杜绝跨章节 q-1 冲突
+    const rawId = explicitId || ('q-' + simpleHash((location.pathname || '') + ':' + stemText.slice(0, 32)) + '-' + (idx + 1));
+    if (seenIds.has(rawId)) continue;
+    seenIds.add(rawId);
+    if (!explicitId) {
+      try { node.setAttribute('data-ch-composite-id', rawId); } catch (_) {}
+    }
+
     // 题型识别（多信号综合判断）
     const hasCheckbox = node.querySelectorAll('input[type="checkbox"]').length > 0;
     const hasRadio = node.querySelectorAll('input[type="radio"]').length > 0;
@@ -158,14 +186,18 @@ const EXTRACT_SCRIPT = `(() => {
     if (hasCheckbox || /【?多选(题)?】?/.test(stemText)) {
       control = 'checkbox';
       multipleAllowed = true;
-    } else if (/【?判断(题)?】?/.test(stemText) || (/(正确|错误|对|错)/.test(stemText) && !hasCheckbox && !hasTextarea)) {
+    } else if (/【?单选(题)?】?/.test(stemText)) {
+      control = 'radio';
+    } else if (/【?判断(题)?】?/.test(stemText)) {
       control = 'boolean';
-    } else if (hasRadio || /【?单选(题)?】?/.test(stemText)) {
+    } else if (hasRadio) {
       control = 'radio';
     } else if (hasInputText || /【?填空(题)?】?/.test(stemText)) {
       control = 'text';
     } else if (hasTextarea || /【?(简答|问答|论述|主观)(题)?】?/.test(stemText)) {
       control = 'text';
+    } else if (/【?判断(题)?】?/.test(stemText) || (/\b(正确|错误|对|错)\b/.test(stemText) && !hasCheckbox && !hasTextarea)) {
+      control = 'boolean';
     } else if (node.querySelectorAll('ul li, ol li').length > 0) {
       control = 'radio';
     }
@@ -173,6 +205,9 @@ const EXTRACT_SCRIPT = `(() => {
     // 选项提取：多选择器策略
     const OPT_SELECTORS = [
       'ul.Zy_ulTop li', 'ul.stem_answer li', '.Zy_ulTop li',
+      '.problem-options li', '.options-list li',
+      '.option-item', '.option_item', '.choice-item',
+      '[class*="option-item"]', '[class*="option_item"]',
       '[class*="answer"] li', '[class*="option"] li',
       '.mark_item_opts li', '.questionOptions li',
       '.optionItem', '[class*="optionItem"]',

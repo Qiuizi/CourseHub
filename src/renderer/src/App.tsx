@@ -412,6 +412,11 @@ export default function App(): JSX.Element {
       void api.video.resetCourse()
       setContinuous(false)
 
+      const targetPlatformId = course.platformId || activeId
+      if (targetPlatformId !== activeId) {
+        setActiveId(targetPlatformId)
+      }
+
       setSelectedCourseName(course.name)
       // 切换课程时复位 AI 助教上下文，不混用不同课程的题目或截图
       void api.ai.cancel()
@@ -431,11 +436,11 @@ export default function App(): JSX.Element {
       setNotice(`正在读取 ${course.name} 真实章节目录...`)
       pushActivity(`进入课程学习：${course.name}`)
 
-      await ensureOpen(activeId)
+      await ensureOpen(targetPlatformId)
 
       try {
         const res = await api.platform.chapters({
-          platformId: activeId,
+          platformId: targetPlatformId,
           courseId: course.courseId,
           clazzId: course.classId,
           cpi: course.cpi || '0'
@@ -459,8 +464,10 @@ export default function App(): JSX.Element {
           setNotice(`该课程暂无在线章节任务点，已在视图中打开课程首页`)
           const fallbackUrl =
             course.courseUrl ||
-            `https://mooc1.chaoxing.com/visit/stucoursemiddle?courseid=${course.courseId}&clazzid=${course.classId}&cpi=${course.cpi || '0'}&ismooc2=1&v=2`
-          void api.browser.navigate(activeId, fallbackUrl)
+            (targetPlatformId === 'yuketang'
+              ? `https://www.yuketang.cn/v2/web/studentlog/${course.classId}`
+              : `https://mooc1.chaoxing.com/visit/stucoursemiddle?courseid=${course.courseId}&clazzid=${course.classId}&cpi=${course.cpi || '0'}&ismooc2=1&v=2`)
+          void api.browser.navigate(targetPlatformId, fallbackUrl)
           setTasks([])
           setActiveTaskId(null)
           return
@@ -482,12 +489,12 @@ export default function App(): JSX.Element {
         setNotice(`已加载 ${chapterTasks.length} 个章节任务点，正在打开第 1 个任务`)
 
         if (first.sourceUrl) {
-          void api.browser.navigate(activeId, first.sourceUrl)
+          void api.browser.navigate(targetPlatformId, first.sourceUrl)
         }
         void startObserving(first.id)
         pushActivity(`已载入任务：${first.title}`)
         if (!first.taskType || first.taskType === 'unknown') {
-          void api.video.inspectChapter({ platformId: activeId, chapterId: first.id })
+          void api.video.inspectChapter({ platformId: targetPlatformId, chapterId: first.id })
         }
       } catch (err) {
         setNotice(`加载章节失败: ${err instanceof Error ? err.message : String(err)}`)
@@ -1115,14 +1122,24 @@ export default function App(): JSX.Element {
           <CoursesScene
             platformId={activeId}
             platformName={current?.name ?? '学习通'}
-            onOpenPlatform={() => void openPlatform(activeId)}
-            onNavigateCourse={(url) => {
+            onOpenPlatform={(targetPlat) => {
+              const pid = targetPlat || activeId
+              setActiveId(pid)
               setScene('browser')
-              void ensureOpen(activeId).then(() => {
-                void api.browser.navigate(activeId, url)
+              void openPlatform(pid)
+            }}
+            onNavigateCourse={(url, targetPlat) => {
+              const pid = targetPlat || activeId
+              setActiveId(pid)
+              setScene('browser')
+              void ensureOpen(pid).then(() => {
+                void api.browser.navigate(pid, url)
               })
             }}
             onEnterCourseStudy={(course) => void handleEnterCourseStudy(course)}
+            onSwitchPlatform={(targetPlat) => {
+              setActiveId(targetPlat)
+            }}
           />
         )
 
@@ -1163,11 +1180,13 @@ export default function App(): JSX.Element {
           <SignInScene
             platformId={activeId}
             platformName={current?.name ?? '测试台'}
-            onOpenPlatform={(url) => {
+            onOpenPlatform={(url, targetPlat) => {
+              const pid = targetPlat || activeId
+              setActiveId(pid)
               setScene('browser')
-              void ensureOpen(activeId).then(() => {
-                if (url) void api.browser.navigate(activeId, url)
-                else void openPlatform(activeId)
+              void ensureOpen(pid).then(() => {
+                if (url) void api.browser.navigate(pid, url)
+                else void openPlatform(pid)
               })
             }}
             onOpenGeoScene={() => setScene('geo')}

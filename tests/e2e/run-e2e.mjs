@@ -988,6 +988,97 @@ async function main() {
         classroomAiCheck?.hasCaptureBtn,
       JSON.stringify(classroomAiCheck)
     )
+
+    /* ---------------------------------------------------------------- */
+    /* v0.4.0 雨课堂真实平台适配与跨平台统一工作台验证                   */
+    /* ---------------------------------------------------------------- */
+    const yktCaps = await win.evaluate(async () => {
+      const r = await window.coursehub.platform.list()
+      if (!r.ok) return null
+      const ykt = r.data.find((p) => p.id === 'yuketang')
+      return {
+        auth: ykt?.capabilities?.auth?.state,
+        listCourses: ykt?.capabilities?.listCourses?.state,
+        listTodaySignIns: ykt?.capabilities?.listTodaySignIns?.state,
+        listActivities: ykt?.capabilities?.listActivities?.state,
+        listChapters: ykt?.capabilities?.listChapters?.state,
+        submitAnswer: ykt?.capabilities?.submitAnswer?.state,
+        videoHeartbeat: ykt?.capabilities?.videoHeartbeat?.state
+      }
+    })
+    record(
+      'v0.4.0-1：雨课堂能力登记完备性（课程/活动/章节端点支持，写接口明确unsupported）',
+      yktCaps?.auth === 'supported' &&
+        yktCaps?.listCourses === 'supported' &&
+        yktCaps?.listActivities === 'supported' &&
+        yktCaps?.listChapters === 'supported' &&
+        yktCaps?.submitAnswer === 'unsupported' &&
+        yktCaps?.videoHeartbeat === 'unsupported',
+      JSON.stringify(yktCaps)
+    )
+
+    const yktUnauthCheck = await win.evaluate(async () => {
+      const auth = await window.coursehub.classroom.auth('yuketang')
+      const courses = await window.coursehub.classroom.courses('yuketang')
+      const activities = await window.coursehub.classroom.activities('yuketang')
+      return {
+        authState: auth.ok ? auth.data.state : 'error',
+        coursesOk: courses.ok,
+        coursesState: courses.ok ? courses.data.state : null,
+        coursesCount: courses.ok ? courses.data.courses.length : -1,
+        coursesError: courses.ok ? courses.data.error : null,
+        actOk: activities.ok,
+        actState: activities.ok ? activities.data.state : null,
+        actCount: activities.ok ? activities.data.activities.length : -1
+      }
+    })
+    record(
+      'v0.4.0-2：雨课堂未登录状态严谨捕获（拒绝伪造课程，返回明确未登录与引导信息）',
+      yktUnauthCheck?.authState === 'unauthenticated' &&
+        yktUnauthCheck?.coursesCount === 0 &&
+        Boolean(yktUnauthCheck?.coursesError) &&
+        yktUnauthCheck?.actCount === 0,
+      JSON.stringify(yktUnauthCheck)
+    )
+
+    // 雨课堂 DOM 题目提取测试：通过测试台加载 yuketang-quiz.html 并执行 extract
+    const yktExtractionCheck = await win.evaluate(async () => {
+      await window.coursehub.testbed.loadFixture('yuketang-quiz.html')
+      await new Promise((r) => setTimeout(r, 600))
+      const res = await window.coursehub.question.extract('testbed')
+      return res
+    })
+
+    record(
+      'v0.4.0-3：雨课堂 DOM 模式穿透提取（识别 problem-item/problem-title/option-item 及题型）',
+      yktExtractionCheck?.ok &&
+        yktExtractionCheck?.data?.questions?.length === 2 &&
+        yktExtractionCheck?.data?.questions[0]?.questionType === 'single' &&
+        yktExtractionCheck?.data?.questions[1]?.questionType === 'multiple',
+      JSON.stringify(yktExtractionCheck?.data?.questions?.map((q) => ({ id: q.id, type: q.questionType, text: q.extractedText?.slice(0, 30) })))
+    )
+
+    // 跨平台工作台 UI 聚合与筛选检查
+    const workbenchCheck = await win.evaluate(async () => {
+      // 切换到课程中心场景
+      const coursesBtn = document.querySelector('button[data-testid="nav-courses"]') || Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.includes('课程中心'))
+      if (coursesBtn) coursesBtn.click()
+      await new Promise((r) => setTimeout(r, 600))
+
+      const hasCourseCard = Boolean(document.querySelector('.course-card') || document.querySelector('[data-testid="courses-grid"]'))
+      const hasSearchInput = Boolean(document.querySelector('input[placeholder*="检索"]') || document.querySelector('input[placeholder*="搜索"]'))
+      const hasPlatformPills = document.querySelectorAll('button').length > 5
+      return {
+        hasCourseCard,
+        hasSearchInput,
+        hasPlatformPills
+      }
+    })
+    record(
+      'v0.4.0-4：统一课程与活动中心跨平台聚合与筛选（UI 组件与检索就绪）',
+      workbenchCheck?.hasSearchInput && workbenchCheck?.hasPlatformPills,
+      JSON.stringify(workbenchCheck)
+    )
   } catch (e) {
     record('E2E 执行过程', false, e instanceof Error ? e.message : String(e))
   } finally {

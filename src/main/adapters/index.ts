@@ -28,7 +28,9 @@ import {
 import {
   detectYuketangAuth,
   fetchYuketangCourses,
-  fetchYuketangSignIns
+  fetchYuketangSignIns,
+  fetchYuketangActivities,
+  fetchYuketangChapters
 } from './yuketang'
 
 export interface CapabilityEntry {
@@ -177,12 +179,14 @@ export class ChaoxingAdapter implements PlatformAdapter {
  */
 export class YuketangAdapter implements PlatformAdapter {
   readonly id = 'yuketang' as const
-  readonly version = '0.3.2'
+  readonly version = '0.4.0'
 
   readonly capabilities: Record<string, CapabilityEntry> = {
     auth: { state: 'supported', reason: '基于内置浏览器 Cookie 与在课探测', verifiedAt: '2026-10-15' },
     listCourses: { state: 'supported', reason: '雨课堂课程列表解析器已就绪', verifiedAt: '2026-10-15' },
     listTodaySignIns: { state: 'supported', reason: '基于 on-lesson 课堂互动与上课签到检测', verifiedAt: '2026-10-15' },
+    listActivities: { state: 'supported', reason: '基于在课与即将到来的互动测验检测', verifiedAt: '2026-10-17' },
+    listChapters: { state: 'supported', reason: '基于雨课堂学习日志/课件或课程入口导航', verifiedAt: '2026-10-17' },
     listVideoTasks: UNVERIFIED('无公开独立任务列表端点'),
     classroomQuestions: UNVERIFIED('题目识别优先在测试台验证'),
     openVideoTask: UNVERIFIED('未验证'),
@@ -208,6 +212,19 @@ export class YuketangAdapter implements PlatformAdapter {
     return fetchYuketangCourses(ses)
   }
 
+  async listChapters(
+    ses: SessionLike,
+    courseId: string,
+    clazzId: string
+  ): Promise<{
+    ok: boolean
+    chapters: ChapterNode[]
+    error?: string
+  }> {
+    if (!ses) return { ok: false, chapters: [], error: '缺少会话上下文' }
+    return fetchYuketangChapters(ses, courseId, clazzId)
+  }
+
   async listTodaySignIns(ses?: SessionLike): Promise<{
     state: string
     events: SignInEvent[]
@@ -223,6 +240,23 @@ export class YuketangAdapter implements PlatformAdapter {
       }
     }
     return fetchYuketangSignIns(ses)
+  }
+
+  async listActivities(ses?: SessionLike): Promise<{
+    state: string
+    activities: ClassroomActivityItem[]
+    fetchedAt: string
+    reason: string | null
+  }> {
+    if (!ses) {
+      return {
+        state: 'unauthenticated',
+        activities: [],
+        fetchedAt: new Date().toISOString(),
+        reason: '缺少会话上下文'
+      }
+    }
+    return fetchYuketangActivities(ses)
   }
 
   async stop(): Promise<void> {

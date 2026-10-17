@@ -12,6 +12,12 @@ export interface YuketangCourse {
   courseName: string
   teacherName: string
   coverUrl: string | null
+  // 统一平台适配字段
+  courseId: string
+  classId: string
+  name: string
+  courseUrl: string
+  platformId: 'yuketang'
 }
 
 export interface YuketangOnLessonStatus {
@@ -72,11 +78,23 @@ export function parseYktCourseListResponse(raw: unknown): {
     const c = item as Record<string, unknown>
     const id = String(c.classroom_id ?? c.id ?? '')
     if (!id) continue
+    const name = String(c.course_name ?? c.name ?? `未命名课程 ${id}`)
+    const teacherName = String(c.teacher_name ?? c.teacher ?? '')
+    const coverUrl = typeof c.cover === 'string' ? c.cover : null
+    const courseId = String(c.course_id ?? c.courseId ?? id)
+    const classId = String(c.classroom_id ?? id)
+    const courseUrl = `https://www.yuketang.cn/v2/web/studentlog/${classId}`
+
     courses.push({
       classroomCourseId: id,
-      courseName: String(c.course_name ?? c.name ?? `未命名课程 ${id}`),
-      teacherName: String(c.teacher_name ?? c.teacher ?? ''),
-      coverUrl: typeof c.cover === 'string' ? c.cover : null
+      courseName: name,
+      teacherName,
+      coverUrl,
+      courseId,
+      classId,
+      name,
+      courseUrl,
+      platformId: 'yuketang'
     })
   }
 
@@ -150,7 +168,7 @@ export function parseWsAppMessage(rawText: string): WsAppMessage | null {
   }
 }
 
-import type { SignInEvent } from '@shared/types'
+import type { SignInEvent, ClassroomActivityItem, ChapterNode } from '@shared/types'
 import type { SessionLike } from './chaoxing'
 
 /** 探测雨课堂 Session 登录状态 */
@@ -162,27 +180,31 @@ export async function detectYuketangAuth(ses: SessionLike): Promise<{
     const cookies = await ses.cookies.get({ domain: 'yuketang.cn' }).catch(() => [])
     const proCookies = await ses.cookies.get({ domain: 'pro.yuketang.cn' }).catch(() => [])
     const all = [...cookies, ...proCookies]
+
+    // 关键：sessionid 与 login_user_id 是雨课堂认证核心（csrftoken 在未登录匿名访问时也会下发）
     const hasAuthCookie = all.some((c) =>
-      ['sessionid', 'csrftoken', 'login_user_id', 'uvbe', 'auth'].some((k) =>
-        c.name.toLowerCase().includes(k.toLowerCase())
+      ['sessionid', 'login_user_id', 'uvbe'].some((k) =>
+        c.name.toLowerCase() === k.toLowerCase() || c.name.toLowerCase().includes(k.toLowerCase())
       )
     )
     if (!hasAuthCookie) {
-      return { state: 'unauthenticated', evidence: '未在内置浏览器中检测到雨课堂登录 Cookie' }
+      return { state: 'unauthenticated', evidence: '未在内置浏览器中检测到雨课堂登录会话（sessionid）' }
     }
 
-    const req = buildOnLessonRequest()
-    const resp = await ses.fetch(req.url, { method: req.method })
+    const courseReq = buildYktCourseListRequest()
+    const resp = await ses.fetch(courseReq.url, { method: courseReq.method })
     if (resp.status === 401 || resp.status === 403) {
       return { state: 'expired', evidence: '雨课堂登录凭证已失效（HTTP 401/403）' }
     }
     const json = (await resp.json().catch(() => null)) as Record<string, unknown> | null
     if (json && typeof json === 'object') {
-      if (json.code === 0) {
+      const code = typeof json.code === 'number' ? json.code : null
+      const errcode = typeof json.errcode === 'number' ? json.errcode : null
+      if (code === 0 || errcode === 0) {
         return { state: 'authenticated', evidence: '雨课堂登录会话有效' }
       }
-      if (json.code === 401 || json.code === 403) {
-        return { state: 'expired', evidence: '雨课堂会话已超时，请重新登录' }
+      if (errcode === 401002 || code === 401 || code === 403 || code === 50000 || json.msg === 'UNAUTHENTICATED') {
+        return { state: 'expired', evidence: '雨课堂会话已超时或未登录，请在内置浏览器登录' }
       }
     }
     return { state: 'unauthenticated', evidence: '无法验证雨课堂身份状态' }
@@ -200,7 +222,7 @@ export async function fetchYuketangCourses(ses: SessionLike): Promise<{
 }> {
   const auth = await detectYuketangAuth(ses)
   if (auth.state !== 'authenticated') {
-    return { ok: false, state: auth.state, courses: [], error: auth.evidence ?? '未登录' }
+    return { ok: false, state: auth.state, courses: [], error: auth.evidence ?? '未登录雨课堂' }
   }
 
   const req = buildYktCourseListRequest()
@@ -279,4 +301,177 @@ export async function fetchYuketangSignIns(ses: SessionLike): Promise<{
     reason: events.length === 0 ? '当前无正在进行的课堂' : null
   }
 }
+
+/** 通过 Session 拉取雨课堂活动（在课互动、习题测验、期末考试） */
+export async function fetchYuketangActivities(ses: SessionLike): Promise<{
+  state: 'supported' | 'unauthenticated' | 'expired' | 'unverified' | 'error'
+  activities: ClassroomActivityItem[]
+  fetchedAt: string
+  reason: string | null
+}> {
+  const auth = await detectYuketangAuth(ses)
+  if (auth.state === 'unauthenticated') {
+    return {
+      state: 'unauthenticated',
+      activities: [],
+      fetchedAt: new Date().toISOString(),
+      reason: '未登录雨课堂账号，请在平台浏览器完成手动登录'
+    }
+  }
+  if (auth.state === 'expired') {
+    return {
+      state: 'expired',
+      activities: [],
+      fetchedAt: new Date().toISOString(),
+      reason: '雨课堂登录已过期，请重新登录'
+    }
+  }
+  if (auth.state === 'error') {
+    return {
+      state: 'error',
+      activities: [],
+      fetchedAt: new Date().toISOString(),
+      reason: auth.evidence ?? '网络异常'
+    }
+  }
+
+  const req = buildOnLessonRequest()
+  const resp = await ses.fetch(req.url, { method: req.method })
+  const json = (await resp.json().catch(() => null)) as Record<string, unknown> | null
+  const onLesson = parseOnLessonResponse(json)
+
+  const activities: ClassroomActivityItem[] = []
+  if (onLesson.ok && onLesson.status.onLesson && onLesson.status.lessonId) {
+    activities.push({
+      id: `ykt-act-${onLesson.status.lessonId}`,
+      platformId: 'yuketang',
+      courseId: onLesson.status.classroomId || '',
+      courseName: onLesson.status.courseName || '雨课堂互动教学',
+      classId: onLesson.status.classroomId || '',
+      title: `${onLesson.status.courseName || '课堂互动'} · 正在上课（进入课堂签到与答题）`,
+      category: 'sign_in',
+      status: 'open',
+      startAt: new Date().toISOString(),
+      endAt: null,
+      sourceUrl: `https://www.yuketang.cn/v2/web/studentlog/${onLesson.status.lessonId}`,
+      fetchedAt: new Date().toISOString(),
+      locationRequired: false,
+      locationText: null,
+      signInKind: 'normal',
+      confidence: 'high'
+    })
+  }
+
+  const data = (json?.data ?? json) as Record<string, unknown> | null
+  const upcoming = Array.isArray(data?.upcoming_exam) ? (data!.upcoming_exam as Record<string, unknown>[]) : []
+  for (const exam of upcoming) {
+    if (!exam || typeof exam !== 'object') continue
+    const examId = String(exam.id ?? exam.exam_id ?? '')
+    if (!examId) continue
+    activities.push({
+      id: `ykt-exam-${examId}`,
+      platformId: 'yuketang',
+      courseId: String(exam.classroom_id ?? exam.course_id ?? ''),
+      courseName: String(exam.course_name ?? '雨课堂测试'),
+      classId: String(exam.classroom_id ?? ''),
+      title: String(exam.title ?? exam.name ?? `随堂测试 ${examId}`),
+      category: 'quiz',
+      status: 'pending',
+      startAt: typeof exam.start_time === 'string' ? exam.start_time : null,
+      endAt: typeof exam.end_time === 'string' ? exam.end_time : null,
+      sourceUrl: `https://www.yuketang.cn/v2/web/studentlog/${exam.classroom_id ?? ''}`,
+      fetchedAt: new Date().toISOString(),
+      locationRequired: false,
+      locationText: null,
+      signInKind: 'unknown',
+      confidence: 'high'
+    })
+  }
+
+  return {
+    state: 'supported',
+    activities,
+    fetchedAt: new Date().toISOString(),
+    reason: activities.length === 0 ? '当前无正在进行的课堂互动' : null
+  }
+}
+
+/** 通过 Session 获取雨课堂章节与课件内容 */
+export async function fetchYuketangChapters(
+  ses: SessionLike,
+  courseId: string,
+  clazzId: string
+): Promise<{
+  ok: boolean
+  chapters: ChapterNode[]
+  error?: string
+}> {
+  const auth = await detectYuketangAuth(ses)
+  if (auth.state !== 'authenticated') {
+    return { ok: false, chapters: [], error: auth.evidence ?? '未登录雨课堂' }
+  }
+
+  const targetClassId = clazzId || courseId
+  const chapters: ChapterNode[] = []
+
+  // 1. 尝试从雨课堂学习日志/课件端点获取
+  try {
+    const url = `https://www.yuketang.cn/v2/api/web/logs/learn/${encodeURIComponent(targetClassId)}?actype=-1&page=0&offset=50&sort=-1`
+    const resp = await ses.fetch(url, { method: 'GET' })
+    const json = (await resp.json().catch(() => null)) as Record<string, unknown> | null
+    const data = (json?.data ?? json) as Record<string, unknown> | null
+    const list = Array.isArray(data?.activities) ? (data!.activities as Record<string, unknown>[]) : []
+
+    if (list.length > 0) {
+      let order = 1
+      for (const item of list) {
+        const id = String(item.id ?? item.courseware_id ?? '')
+        if (!id) continue
+        const title = String(item.title ?? item.name ?? `雨课堂课件 ${id}`)
+        const typeStr = String(item.type ?? '').toLowerCase()
+        const taskType = typeStr.includes('video') ? 'video' : typeStr.includes('problem') || typeStr.includes('quiz') ? 'quiz' : 'doc'
+        const taskUrl = `https://www.yuketang.cn/v2/web/studentlog/${targetClassId}`
+
+        chapters.push({
+          courseId,
+          clazzId: targetClassId,
+          chapterId: `ykt-chap-${id}`,
+          parentId: null,
+          title,
+          order: order++,
+          taskType,
+          taskUrl,
+          status: 'unknown',
+          source: 'yuketang_api',
+          confidence: 'high',
+          attachments: []
+        })
+      }
+    }
+  } catch (_) {}
+
+  // 2. 如果接口暂无独立活动列表或端点结构差异，提供根章节入口直接学习
+  if (chapters.length === 0) {
+    chapters.push({
+      courseId,
+      clazzId: targetClassId,
+      chapterId: `ykt-main-${targetClassId}`,
+      parentId: null,
+      title: '进入雨课堂学习（课件、习题与回放）',
+      order: 1,
+      taskType: 'other',
+      taskUrl: `https://www.yuketang.cn/v2/web/studentlog/${targetClassId}`,
+      status: 'unknown',
+      source: 'yuketang_direct',
+      confidence: 'medium',
+      attachments: []
+    })
+  }
+
+  return {
+    ok: true,
+    chapters
+  }
+}
+
 

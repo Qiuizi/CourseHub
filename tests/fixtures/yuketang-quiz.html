@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>雨课堂学生端课堂互动测验（本地 Fixture 测试页）</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; background: #f8fafc; color: #1e293b; }
+    .header { margin-bottom: 20px; border-bottom: 1px solid #cbd5e1; padding-bottom: 10px; }
+    .problem-item { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+    .problem-title { font-weight: 600; font-size: 15px; margin-bottom: 12px; color: #0f172a; line-height: 1.5; }
+    .problem-options { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+    .option-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid #e2e8f0; border-radius: 6px; cursor: pointer; transition: background 0.15s; }
+    .option-item:hover { background: #f1f5f9; }
+    .option-item input { margin: 0; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h2>计算机体系结构（雨课堂课堂互动）</h2>
+    <p>授课教师：张教授 · 正在进行随堂限时测验</p>
+  </div>
+
+  <div class="problem-item" data-problem-id="ykt-p1">
+    <div class="problem-title">【单选题】（第 1/2 题）在现代 CPU 流水线技术中，针对数据相关（Data Hazard）最直接有效的硬件优化手段是？</div>
+    <ul class="problem-options">
+      <li class="option-item">
+        <input type="radio" name="p1" id="p1_a" value="A">
+        <label for="p1_a">A. 操作数旁路（Forwarding / Bypassing）</label>
+      </li>
+      <li class="option-item">
+        <input type="radio" name="p1" id="p1_b" value="B">
+        <label for="p1_b">B. 分支预测缓存（Branch Target Buffer）</label>
+      </li>
+      <li class="option-item">
+        <input type="radio" name="p1" id="p1_c" value="C">
+        <label for="p1_c">C. 增大 L1 指令缓存容量</label>
+      </li>
+      <li class="option-item">
+        <input type="radio" name="p1" id="p1_d" value="D">
+        <label for="p1_d">D. 降低主频以缩短时钟周期</label>
+      </li>
+    </ul>
+  </div>
+
+  <div class="problem-item" data-problem-id="ykt-p2">
+    <div class="problem-title">【多选题】（第 2/2 题）以下关于多核缓存一致性协议（MESI）的状态定义，正确的包括？</div>
+    <ul class="problem-options">
+      <li class="option-item">
+        <input type="checkbox" name="p2" id="p2_m" value="M">
+        <label for="p2_m">A. Modified（已修改，脏数据且仅本核持有）</label>
+      </li>
+      <li class="option-item">
+        <input type="checkbox" name="p2" id="p2_e" value="E">
+        <label for="p2_e">B. Exclusive（独占，干净数据且仅本核持有）</label>
+      </li>
+      <li class="option-item">
+        <input type="checkbox" name="p2" id="p2_s" value="S">
+        <label for="p2_s">C. Shared（共享，干净数据且多核共享）</label>
+      </li>
+      <li class="option-item">
+        <input type="checkbox" name="p2" id="p2_i" value="I">
+        <label for="p2_i">D. Invalid（无效状态）</label>
+      </li>
+    </ul>
+  </div>
+</body>
+</html>

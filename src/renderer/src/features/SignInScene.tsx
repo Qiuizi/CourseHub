@@ -12,13 +12,13 @@ import {
   Timer
 } from 'lucide-react'
 import { Card, Empty, Notice, Rows } from '../components/ui'
-import type { ClassroomActivityItem } from '@shared/types'
+import type { ClassroomActivityItem, PlatformId } from '@shared/types'
 import { isStale } from '@shared/signin'
 
 export interface SignInSceneProps {
   platformId: string
   platformName: string
-  onOpenPlatform: (url?: string) => void
+  onOpenPlatform: (url?: string, targetPlatform?: PlatformId) => void
   onOpenGeoScene?: () => void
 }
 
@@ -64,6 +64,8 @@ export function SignInScene({
   const [triggerMsg, setTriggerMsg] = useState<string | null>(null)
 
   // 筛选与自动刷新
+  const [platformFilter, setPlatformFilter] = useState<'all' | 'chaoxing' | 'yuketang' | 'testbed'>('all')
+  const [courseFilter, setCourseFilter] = useState<string>('')
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>('all')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<number>(60) // 默认 60 秒
@@ -74,41 +76,63 @@ export function SignInScene({
   const loadActivities = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await window.coursehub.classroom.activities(platformId as any)
-      if (res.ok) {
-        setActivities(res.data.activities || [])
-        setPlatformState(res.data.state)
-        setStateReason(res.data.reason)
-        setLastSyncAt(res.data.fetchedAt || new Date().toISOString())
+      if (platformFilter === 'all') {
+        const [cxRes, yktRes, tbRes] = await Promise.allSettled([
+          window.coursehub.classroom.activities('chaoxing'),
+          window.coursehub.classroom.activities('yuketang'),
+          window.coursehub.classroom.activities('testbed')
+        ])
+        const combined: ClassroomActivityItem[] = []
+        if (cxRes.status === 'fulfilled' && cxRes.value.ok && cxRes.value.data.activities) {
+          combined.push(...cxRes.value.data.activities.map((a) => ({ ...a, platformId: 'chaoxing' as const })))
+        }
+        if (yktRes.status === 'fulfilled' && yktRes.value.ok && yktRes.value.data.activities) {
+          combined.push(...yktRes.value.data.activities.map((a) => ({ ...a, platformId: 'yuketang' as const })))
+        }
+        if (tbRes.status === 'fulfilled' && tbRes.value.ok && tbRes.value.data.activities) {
+          combined.push(...tbRes.value.data.activities.map((a) => ({ ...a, platformId: 'testbed' as const })))
+        }
+        setActivities(combined)
+        setPlatformState('supported')
+        setStateReason(`已聚合学习通、雨课堂与测试台共 ${combined.length} 项课堂活动`)
+        setLastSyncAt(new Date().toISOString())
       } else {
-        // 尝试兜底旧签到端点
-        const fb = await window.coursehub.classroom.todaySignIns(platformId as any)
-        if (fb.ok && fb.data.events) {
-          const mapped: ClassroomActivityItem[] = (fb.data.events as any[]).map((ev) => ({
-            id: ev.id,
-            platformId: platformId as any,
-            courseId: ev.courseId || 'unknown',
-            courseName: ev.courseName || '未命名课程',
-            classId: 'default',
-            title: ev.title,
-            category: 'sign_in',
-            status: ev.status === 'open' ? 'open' : ev.status === 'closed' ? 'closed' : 'pending',
-            startAt: ev.startAt,
-            endAt: ev.endAt,
-            sourceUrl: ev.sourceUrl || null,
-            fetchedAt: ev.fetchedAt || new Date().toISOString(),
-            locationRequired: Boolean(ev.locationRequired),
-            locationText: ev.locationText || null,
-            signInKind: ev.kind || 'normal',
-            confidence: 'high'
-          }))
-          setActivities(mapped)
-          setPlatformState(fb.data.state)
-          setStateReason(fb.data.reason)
-          setLastSyncAt(fb.data.fetchedAt || new Date().toISOString())
+        const targetPid = platformFilter || platformId
+        const res = await window.coursehub.classroom.activities(targetPid as any)
+        if (res.ok) {
+          setActivities(res.data.activities || [])
+          setPlatformState(res.data.state)
+          setStateReason(res.data.reason)
+          setLastSyncAt(res.data.fetchedAt || new Date().toISOString())
         } else {
-          setPlatformState('error')
-          setStateReason(res.error.message)
+          const fb = await window.coursehub.classroom.todaySignIns(targetPid as any)
+          if (fb.ok && fb.data.events) {
+            const mapped: ClassroomActivityItem[] = (fb.data.events as any[]).map((ev) => ({
+              id: ev.id,
+              platformId: targetPid as any,
+              courseId: ev.courseId || 'unknown',
+              courseName: ev.courseName || '未命名课程',
+              classId: 'default',
+              title: ev.title,
+              category: 'sign_in',
+              status: ev.status === 'open' ? 'open' : ev.status === 'closed' ? 'closed' : 'pending',
+              startAt: ev.startAt,
+              endAt: ev.endAt,
+              sourceUrl: ev.sourceUrl || null,
+              fetchedAt: ev.fetchedAt || new Date().toISOString(),
+              locationRequired: Boolean(ev.locationRequired),
+              locationText: ev.locationText || null,
+              signInKind: ev.kind || 'normal',
+              confidence: 'high'
+            }))
+            setActivities(mapped)
+            setPlatformState(fb.data.state)
+            setStateReason(fb.data.reason)
+            setLastSyncAt(fb.data.fetchedAt || new Date().toISOString())
+          } else {
+            setPlatformState('error')
+            setStateReason(res.error.message)
+          }
         }
       }
     } catch (err) {
@@ -118,12 +142,12 @@ export function SignInScene({
       setLoading(false)
       setCountdown(autoRefreshInterval)
     }
-  }, [platformId, autoRefreshInterval])
+  }, [platformFilter, platformId, autoRefreshInterval])
 
   // 挂载与自动刷新倒计时
   useEffect(() => {
     void loadActivities()
-  }, [platformId])
+  }, [loadActivities])
 
   useEffect(() => {
     if (autoRefreshInterval <= 0) {
@@ -165,6 +189,15 @@ export function SignInScene({
 
   // 过滤活动
   const filteredActivities = activities.filter((act) => {
+    if (platformFilter !== 'all' && act.platformId !== platformFilter) {
+      return false
+    }
+    if (courseFilter.trim()) {
+      const kw = courseFilter.trim().toLowerCase()
+      if (!act.courseName?.toLowerCase().includes(kw) && !act.title?.toLowerCase().includes(kw)) {
+        return false
+      }
+    }
     if (categoryFilter !== 'all') {
       if (categoryFilter === 'sign_in' && act.category !== 'sign_in') return false
       if (categoryFilter === 'quiz' && act.category !== 'quiz' && act.category !== 'exercise') return false
@@ -196,7 +229,7 @@ export function SignInScene({
 
       {/* 顶部控制栏与统计 */}
       <Card
-        title="课堂活动工作台"
+        title="跨平台课堂活动中心"
         action={
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             {/* 自动刷新间隔选择 */}
@@ -238,16 +271,16 @@ export function SignInScene({
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 11.5, color: 'var(--ch-text-2)' }}>
-              当前平台：<strong>{platformName}</strong>
+              当前视图：<strong>{platformFilter === 'all' ? '全部平台聚合' : platformFilter === 'chaoxing' ? '超星学习通' : platformFilter === 'yuketang' ? '雨课堂' : '测试台'}</strong>
             </span>
             <span style={{ fontSize: 11, color: 'var(--ch-text-3)' }}>
               最近成功同步：{lastSyncAt ? fmtDateTime(lastSyncAt) : '尚未同步'}
             </span>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <span className="chip chip-tint">共 {activities.length} 项活动</span>
+            <span className="chip chip-tint">共 {filteredActivities.length} 项活动</span>
             <span className="chip chip-emerald">
-              进行中 {activities.filter((a) => a.status === 'open').length}
+              进行中 {filteredActivities.filter((a) => a.status === 'open').length}
             </span>
           </div>
         </div>
@@ -263,6 +296,52 @@ export function SignInScene({
             borderTop: '1px solid var(--ch-hairline)'
           }}
         >
+          {/* 平台过滤与课程检索 */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 11, color: 'var(--ch-text-3)', marginRight: 4 }}>平台：</span>
+              {(
+                [
+                  { id: 'all', label: '全部平台' },
+                  { id: 'chaoxing', label: '学习通' },
+                  { id: 'yuketang', label: '雨课堂' },
+                  { id: 'testbed', label: '测试台' }
+                ] as const
+              ).map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  className={`platform-pill ${platformFilter === p.id ? 'active' : ''}`}
+                  style={{
+                    padding: '3px 10px',
+                    fontSize: 11,
+                    background: platformFilter === p.id ? 'var(--ch-primary)' : 'var(--ch-subtle)',
+                    color: platformFilter === p.id ? '#fff' : 'inherit'
+                  }}
+                  onClick={() => setPlatformFilter(p.id)}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+
+            <input
+              type="text"
+              placeholder="按课程/活动名称搜索..."
+              value={courseFilter}
+              onChange={(e) => setCourseFilter(e.target.value)}
+              style={{
+                fontSize: 11,
+                padding: '3px 8px',
+                borderRadius: 4,
+                border: '1px solid var(--ch-border)',
+                background: 'var(--ch-surface-2)',
+                color: 'var(--ch-text)',
+                width: 160
+              }}
+            />
+          </div>
+
           {/* 分类过滤 */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 11, color: 'var(--ch-text-3)', marginRight: 4 }}>类型：</span>
@@ -395,6 +474,18 @@ export function SignInScene({
                   <div style={{ minWidth: 0, flex: 1 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
                       <span
+                        className="chip"
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 600,
+                          padding: '2px 6px',
+                          background: act.platformId === 'yuketang' ? '#10b981' : act.platformId === 'chaoxing' ? '#6366f1' : '#64748b',
+                          color: '#fff'
+                        }}
+                      >
+                        {act.platformId === 'yuketang' ? '雨课堂' : act.platformId === 'chaoxing' ? '学习通' : '测试台'}
+                      </span>
+                      <span
                         className="chip chip-tint"
                         style={{ fontSize: 10.5, fontWeight: 600, padding: '2px 6px' }}
                       >
@@ -481,7 +572,7 @@ export function SignInScene({
                       type="button"
                       className="btn btn-primary"
                       style={{ fontSize: 11 }}
-                      onClick={() => onOpenPlatform(act.sourceUrl ?? undefined)}
+                      onClick={() => onOpenPlatform(act.sourceUrl ?? undefined, act.platformId)}
                     >
                       <ExternalLink size={12} /> 进入活动页面
                     </button>

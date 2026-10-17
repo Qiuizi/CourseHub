@@ -347,11 +347,13 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
         try {
           const res = (await frame.executeJavaScript(`(() => {
             const qid = ${JSON.stringify(targetQid)};
-            // 多种 ID 属性兼容超星、雨课堂等平台
+            // 多种 ID 属性兼容超星、雨课堂等平台及复合稳定 ID
             const el = document.getElementById(qid) ||
               document.querySelector('[data-id="' + CSS.escape(qid) + '"]') ||
               document.querySelector('[data-questionid="' + CSS.escape(qid) + '"]') ||
               document.querySelector('[data-qid="' + CSS.escape(qid) + '"]') ||
+              document.querySelector('[data-problem-id="' + CSS.escape(qid) + '"]') ||
+              document.querySelector('[data-ch-composite-id="' + CSS.escape(qid) + '"]') ||
               document.querySelector('[data-ch-question="' + CSS.escape(qid) + '"]') ||
               document.querySelector('#' + CSS.escape(qid));
             if (!el) return { found: false };
@@ -359,6 +361,20 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
             // 先展开可能折叠的题目内容（如 display:none 的子元素）
             const collapsed = el.querySelectorAll('[style*="display: none"], [style*="display:none"]');
             collapsed.forEach(function(c) { c.style.display = ''; });
+
+            // 若在嵌套 iframe 中：递归展开父级 iframe 尺寸并滚入视口，防止外层容器裁切长题目
+            try {
+              let curFrame = window.frameElement;
+              while (curFrame) {
+                curFrame.scrollIntoView({ behavior: 'instant', block: 'start' });
+                const elRect = el.getBoundingClientRect();
+                const neededH = Math.max(el.scrollHeight, elRect.height + elRect.top + 60);
+                if (curFrame.offsetHeight < neededH) {
+                  curFrame.style.minHeight = neededH + 'px';
+                }
+                curFrame = curFrame.ownerDocument?.defaultView?.frameElement;
+              }
+            } catch (_) {}
 
             el.scrollIntoView({ behavior: 'instant', block: 'start' });
             // 额外向上偏移 10px，避免被 sticky header 遮住

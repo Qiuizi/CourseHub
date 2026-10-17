@@ -18,7 +18,9 @@ import {
   parseYktCourseListResponse,
   buildOnLessonRequest,
   parseOnLessonResponse,
-  parseWsAppMessage
+  parseWsAppMessage,
+  fetchYuketangActivities,
+  fetchYuketangChapters
 } from '../../src/main/adapters/yuketang'
 
 describe('ChaoxingAdapter 解析与请求构造', () => {
@@ -449,7 +451,12 @@ describe('YuketangAdapter 解析与请求构造', () => {
       classroomCourseId: '601',
       courseName: '分布式计算',
       teacherName: '张教授',
-      coverUrl: 'https://cover.example/img.png'
+      coverUrl: 'https://cover.example/img.png',
+      classId: '601',
+      courseId: '601',
+      name: '分布式计算',
+      courseUrl: 'https://www.yuketang.cn/v2/web/studentlog/601',
+      platformId: 'yuketang'
     })
   })
 
@@ -760,6 +767,20 @@ describe('ChaoxingAdapter 与 YuketangAdapter 会话探测与业务接线', () =
     expect(signins.events).toHaveLength(1)
     expect(signins.events[0]?.id).toBe('ykt-887766')
     expect(signins.events[0]?.title).toContain('高级计算机体系结构 · 正在上课')
+
+    // 验证 fetchYuketangActivities 能结构化映射雨课堂活动
+    const acts = await fetchYuketangActivities(mockSes)
+    expect(acts.state).toBe('supported')
+    expect(acts.activities).toHaveLength(1)
+    expect(acts.activities[0]?.platformId).toBe('yuketang')
+    expect(acts.activities[0]?.title).toContain('正在上课')
+
+    // 验证 fetchYuketangChapters
+    const chaps = await fetchYuketangChapters(mockSes, '301', '301')
+    expect(chaps.ok).toBe(true)
+    expect(chaps.chapters.length).toBeGreaterThan(0)
+    expect(chaps.chapters[0]?.courseId).toBe('301')
   })
 })
+
 
