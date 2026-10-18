@@ -280,8 +280,28 @@ export function parseWsAppMessage(rawText: string): WsAppMessage | null {
   }
 }
 
-import type { SignInEvent, ClassroomActivityItem, ChapterNode } from '@shared/types'
+import type { SignInEvent, ClassroomActivityItem, ChapterNode, TaskType, TaskDetectionMethod } from '@shared/types'
 import type { SessionLike } from './chaoxing'
+
+function parseTimeOrNull(val: unknown): string | null {
+  if (!val) return null
+  if (typeof val === 'number' && Number.isFinite(val) && val > 0) {
+    const ms = val < 1e11 ? val * 1000 : val
+    return new Date(ms).toISOString()
+  }
+  if (typeof val === 'string') {
+    const s = val.trim()
+    if (!s) return null
+    if (/^\d+$/.test(s)) {
+      const n = Number(s)
+      const ms = n < 1e11 ? n * 1000 : n
+      return new Date(ms).toISOString()
+    }
+    const d = new Date(s)
+    if (!Number.isNaN(d.getTime())) return d.toISOString()
+  }
+  return null
+}
 
 /** 探测雨课堂 Session 登录状态，支持通用版及各高校专有独立版（荷塘、长江、黄河等） */
 export async function detectYuketangAuth(
@@ -502,7 +522,7 @@ export async function fetchYuketangSignIns(ses: SessionLike): Promise<{
   }
 }
 
-/** 通过 Session 拉取雨课堂活动（在课互动、习题测验、期末考试） */
+/** 通过 Session 拉取雨课堂活动（在课互动、习题测验、期末考试、多课程课后作业聚合） */
 export async function fetchYuketangActivities(ses: SessionLike): Promise<{
   state: 'supported' | 'unauthenticated' | 'expired' | 'unverified' | 'error'
   activities: ClassroomActivityItem[]
@@ -536,64 +556,142 @@ export async function fetchYuketangActivities(ses: SessionLike): Promise<{
   }
 
   const baseUrl = auth.serverBaseUrl || 'https://www.yuketang.cn'
-  const req = buildOnLessonRequest(baseUrl)
-  const resp = await ses.fetch(req.url, { method: req.method })
-  const json = (await resp.json().catch(() => null)) as Record<string, unknown> | null
-  const onLesson = parseOnLessonResponse(json)
-
   const activities: ClassroomActivityItem[] = []
-  if (onLesson.ok && onLesson.status.onLesson && onLesson.status.lessonId) {
-    activities.push({
-      id: `ykt-act-${onLesson.status.lessonId}`,
-      platformId: 'yuketang',
-      courseId: onLesson.status.classroomId || '',
-      courseName: onLesson.status.courseName || '雨课堂互动教学',
-      classId: onLesson.status.classroomId || '',
-      title: `${onLesson.status.courseName || '课堂互动'} · 正在上课（进入课堂签到与答题）`,
-      category: 'sign_in',
-      status: 'open',
-      startAt: new Date().toISOString(),
-      endAt: null,
-      sourceUrl: `${baseUrl}/v2/web/studentlog/${onLesson.status.lessonId}`,
-      fetchedAt: new Date().toISOString(),
-      locationRequired: false,
-      locationText: null,
-      signInKind: 'normal',
-      confidence: 'high'
-    })
+
+  // 1. 检查实时上课状态与考前测试
+  try {
+    const req = buildOnLessonRequest(baseUrl)
+    const resp = await ses.fetch(req.url, { method: req.method })
+    const json = (await resp.json().catch(() => null)) as Record<string, unknown> | null
+    const onLesson = parseOnLessonResponse(json)
+
+    if (onLesson.ok && onLesson.status.onLesson && onLesson.status.lessonId) {
+      activities.push({
+        id: `ykt-act-${onLesson.status.lessonId}`,
+        platformId: 'yuketang',
+        courseId: onLesson.status.classroomId || '',
+        courseName: onLesson.status.courseName || '雨课堂互动教学',
+        classId: onLesson.status.classroomId || '',
+        title: `${onLesson.status.courseName || '课堂互动'} · 正在上课（进入课堂签到与答题）`,
+        category: 'sign_in',
+        status: 'open',
+        startAt: new Date().toISOString(),
+        endAt: null,
+        sourceUrl: `${baseUrl}/v2/web/studentlog/${onLesson.status.lessonId}`,
+        fetchedAt: new Date().toISOString(),
+        locationRequired: false,
+        locationText: null,
+        signInKind: 'normal',
+        confidence: 'high'
+      })
+    }
+
+    const data = (json?.data ?? json) as Record<string, unknown> | null
+    const upcoming = Array.isArray(data?.upcoming_exam) ? (data!.upcoming_exam as Record<string, unknown>[]) : []
+    for (const exam of upcoming) {
+      if (!exam || typeof exam !== 'object') continue
+      const examId = String(exam.id ?? exam.exam_id ?? '')
+      if (!examId) continue
+      activities.push({
+        id: `ykt-exam-${examId}`,
+        platformId: 'yuketang',
+        courseId: String(exam.classroom_id ?? exam.course_id ?? ''),
+        courseName: String(exam.course_name ?? '雨课堂测试'),
+        classId: String(exam.classroom_id ?? ''),
+        title: String(exam.title ?? exam.name ?? `随堂测试 ${examId}`),
+        category: 'quiz',
+        status: 'pending',
+        startAt: typeof exam.start_time === 'string' ? exam.start_time : null,
+        endAt: typeof exam.end_time === 'string' ? exam.end_time : null,
+        sourceUrl: `${baseUrl}/v2/web/studentlog/${exam.classroom_id ?? ''}`,
+        fetchedAt: new Date().toISOString(),
+        locationRequired: false,
+        locationText: null,
+        signInKind: 'unknown',
+        confidence: 'high'
+      })
+    }
+  } catch {}
+
+  // 2. 聚合在读课程的课堂活动与课后作业
+  try {
+    let courses = cachedYktCourses
+    if (courses.length === 0) {
+      const cr = await fetchYuketangCourses(ses)
+      if (cr.ok) courses = cr.courses
+    }
+    const currentTermCourses = courses.filter((c) => c.isCurrentTerm)
+    const targetCourses = currentTermCourses.length > 0 ? currentTermCourses : courses.slice(0, 3)
+
+    const now = Date.now()
+    await Promise.all(
+      targetCourses.map(async (course) => {
+        try {
+          const logUrl = `${baseUrl}/v2/api/web/logs/learn/${encodeURIComponent(course.classId)}?actype=-1&page=0&offset=20&sort=-1`
+          const lResp = await ses.fetch(logUrl, { method: 'GET' })
+          if (!lResp.ok) return
+          const lJson = (await lResp.json().catch(() => null)) as Record<string, unknown> | null
+          const lData = (lJson?.data ?? lJson) as Record<string, unknown> | null
+          const acts = Array.isArray(lData?.activities) ? (lData!.activities as Record<string, unknown>[]) : []
+
+          for (const item of acts) {
+            const numType = Number(item.type)
+            if (numType === 19) {
+              // 课后作业 / 测验
+              const deadline = item.content && typeof item.content === 'object'
+                ? Number((item.content as Record<string, unknown>).score_d)
+                : null
+              const isPast = deadline ? deadline < now : false
+              const isDone = item.is_finished === true
+              const status: 'open' | 'closed' | 'pending' = isDone ? 'closed' : isPast ? 'closed' : 'open'
+
+              activities.push({
+                id: `ykt-hw-${item.id}`,
+                platformId: 'yuketang',
+                courseId: course.courseId,
+                courseName: course.name,
+                classId: course.classId,
+                title: String(item.title || `课后作业 ${item.id}`),
+                category: 'quiz',
+                status,
+                startAt: parseTimeOrNull(item.create_time),
+                endAt: parseTimeOrNull(deadline),
+                sourceUrl: `${baseUrl}/v2/web/studentlog/${course.classId}`,
+                fetchedAt: new Date().toISOString(),
+                locationRequired: false,
+                locationText: null,
+                signInKind: 'unknown',
+                confidence: 'high'
+              })
+            }
+          }
+        } catch {}
+      })
+    )
+  } catch {}
+
+  // 去重与排序：进行中(open) > 未开始(pending) > 已结束(closed)
+  const seen = new Set<string>()
+  const deduped: ClassroomActivityItem[] = []
+  for (const a of activities) {
+    if (!seen.has(a.id)) {
+      seen.add(a.id)
+      deduped.push(a)
+    }
   }
 
-  const data = (json?.data ?? json) as Record<string, unknown> | null
-  const upcoming = Array.isArray(data?.upcoming_exam) ? (data!.upcoming_exam as Record<string, unknown>[]) : []
-  for (const exam of upcoming) {
-    if (!exam || typeof exam !== 'object') continue
-    const examId = String(exam.id ?? exam.exam_id ?? '')
-    if (!examId) continue
-    activities.push({
-      id: `ykt-exam-${examId}`,
-      platformId: 'yuketang',
-      courseId: String(exam.classroom_id ?? exam.course_id ?? ''),
-      courseName: String(exam.course_name ?? '雨课堂测试'),
-      classId: String(exam.classroom_id ?? ''),
-      title: String(exam.title ?? exam.name ?? `随堂测试 ${examId}`),
-      category: 'quiz',
-      status: 'pending',
-      startAt: typeof exam.start_time === 'string' ? exam.start_time : null,
-      endAt: typeof exam.end_time === 'string' ? exam.end_time : null,
-      sourceUrl: `${baseUrl}/v2/web/studentlog/${exam.classroom_id ?? ''}`,
-      fetchedAt: new Date().toISOString(),
-      locationRequired: false,
-      locationText: null,
-      signInKind: 'unknown',
-      confidence: 'high'
-    })
-  }
+  const orderWeight = { open: 0, pending: 1, unknown: 2, closed: 3 }
+  deduped.sort((a, b) => {
+    const diff = (orderWeight[a.status] ?? 2) - (orderWeight[b.status] ?? 2)
+    if (diff !== 0) return diff
+    return (b.startAt || '').localeCompare(a.startAt || '')
+  })
 
   return {
     state: 'supported',
-    activities,
+    activities: deduped,
     fetchedAt: new Date().toISOString(),
-    reason: activities.length === 0 ? '当前无正在进行的课堂互动' : null
+    reason: deduped.length === 0 ? '当前在读课程暂无进行中的课堂互动与作业' : `已汇总 ${deduped.length} 项雨课堂活动与作业`
   }
 }
 
@@ -612,12 +710,13 @@ export async function fetchYuketangChapters(
     return { ok: false, chapters: [], error: auth.evidence ?? '未登录雨课堂' }
   }
 
+  const baseUrl = auth.serverBaseUrl || 'https://www.yuketang.cn'
   const targetClassId = clazzId || courseId
   const chapters: ChapterNode[] = []
 
-  // 1. 尝试从雨课堂学习日志/课件端点获取
+  // 从雨课堂学习日志/课件端点获取真实课堂课件、文档、视频与测验
   try {
-    const url = `https://www.yuketang.cn/v2/api/web/logs/learn/${encodeURIComponent(targetClassId)}?actype=-1&page=0&offset=50&sort=-1`
+    const url = `${baseUrl}/v2/api/web/logs/learn/${encodeURIComponent(targetClassId)}?actype=-1&page=0&offset=50&sort=-1`
     const resp = await ses.fetch(url, { method: 'GET' })
     const json = (await resp.json().catch(() => null)) as Record<string, unknown> | null
     const data = (json?.data ?? json) as Record<string, unknown> | null
@@ -628,10 +727,65 @@ export async function fetchYuketangChapters(
       for (const item of list) {
         const id = String(item.id ?? item.courseware_id ?? '')
         if (!id) continue
-        const title = String(item.title ?? item.name ?? `雨课堂课件 ${id}`)
-        const typeStr = String(item.type ?? '').toLowerCase()
-        const taskType = typeStr.includes('video') ? 'video' : typeStr.includes('problem') || typeStr.includes('quiz') ? 'quiz' : 'doc'
-        const taskUrl = `https://www.yuketang.cn/v2/web/studentlog/${targetClassId}`
+        const title = String(item.title ?? item.name ?? `雨课堂课件 ${id}`).trim()
+        const numericType = Number(item.type)
+
+        let taskType: TaskType = 'unknown'
+        let detectionMethod: TaskDetectionMethod = 'dom_element'
+        let confidence: 'high' | 'medium' | 'low' = 'high'
+
+        if (numericType === 16 || numericType === 17) {
+          // 微电影/导论视频
+          taskType = 'video'
+          detectionMethod = 'dom_element'
+        } else if (numericType === 14 || numericType === 15) {
+          // 14: 课堂授课PPT/讲义报告, 15: 课前/课外文档课件
+          taskType = 'doc'
+          detectionMethod = 'dom_element'
+        } else if (numericType === 19) {
+          // 课后作业/随堂测验
+          taskType = 'quiz'
+          detectionMethod = 'dom_element'
+        } else if (numericType === 9) {
+          // 班级群公告/通知
+          taskType = 'other'
+          detectionMethod = 'dom_element'
+        } else {
+          // 标题兜底识别或如实标记为待确认，绝不瞎猜为视频
+          const lowerTitle = title.toLowerCase()
+          if (lowerTitle.includes('作业') || lowerTitle.includes('测验') || lowerTitle.includes('题') || lowerTitle.includes('quiz')) {
+            taskType = 'quiz'
+            detectionMethod = 'catalog_title'
+            confidence = 'medium'
+          } else if (lowerTitle.includes('视频') || lowerTitle.includes('录像') || lowerTitle.includes('微课') || lowerTitle.includes('mp4')) {
+            taskType = 'video'
+            detectionMethod = 'catalog_title'
+            confidence = 'medium'
+          } else if (lowerTitle.includes('课件') || lowerTitle.includes('讲义') || lowerTitle.includes('ppt') || lowerTitle.includes('pdf') || lowerTitle.includes('文档')) {
+            taskType = 'doc'
+            detectionMethod = 'catalog_title'
+            confidence = 'medium'
+          } else {
+            taskType = 'unknown'
+            detectionMethod = 'uninspected'
+            confidence = 'low'
+          }
+        }
+
+        // 精准跳转链接：
+        // 课堂报告 (type 14) 若有 courseware_id 则直达课件报告页，否则进入 studentlog
+        let taskUrl = `${baseUrl}/v2/web/studentlog/${targetClassId}`
+        if (numericType === 14 && item.courseware_id) {
+          taskUrl = `${baseUrl}/v2/web/student-lesson-report/${targetClassId}/${item.courseware_id}/${id}`
+        }
+
+        // 状态映射：真实字段判断
+        let status: 'completed' | 'not_started' | 'unknown' = 'unknown'
+        if (item.is_finished === true || item.attend_status === true || item.hasRead === true) {
+          status = 'completed'
+        } else if (item.is_finished === false || item.attend_status === false) {
+          status = 'not_started'
+        }
 
         chapters.push({
           courseId,
@@ -642,37 +796,22 @@ export async function fetchYuketangChapters(
           order: order++,
           taskType,
           taskUrl,
-          status: 'unknown',
+          status,
           source: 'yuketang_api',
-          confidence: 'high',
+          detectionMethod,
+          confidence,
           attachments: []
         })
       }
     }
   } catch (_) {}
 
-  // 2. 如果接口暂无独立活动列表或端点结构差异，提供根章节入口直接学习
-  if (chapters.length === 0) {
-    chapters.push({
-      courseId,
-      clazzId: targetClassId,
-      chapterId: `ykt-main-${targetClassId}`,
-      parentId: null,
-      title: '进入雨课堂学习（课件、习题与回放）',
-      order: 1,
-      taskType: 'other',
-      taskUrl: `https://www.yuketang.cn/v2/web/studentlog/${targetClassId}`,
-      status: 'unknown',
-      source: 'yuketang_direct',
-      confidence: 'medium',
-      attachments: []
-    })
-  }
-
+  // 若该课程未发布在线章节或课件，如实返回空数组，不伪造假节点
   return {
     ok: true,
     chapters
   }
 }
+
 
 

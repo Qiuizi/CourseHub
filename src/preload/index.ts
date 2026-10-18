@@ -105,7 +105,10 @@ const api = {
         courseId,
         clazzId,
         cpi
-      })
+      }),
+    notifiedIds: () => invoke<string[]>('classroom:notified-ids'),
+    testNotify: (input?: { title?: string; courseName?: string; sourceUrl?: string; category?: string }) =>
+      invoke<{ ok: boolean; activity: ClassroomActivityItem }>('classroom:test-notify', input)
   },
   video: {
     list: (platformId: PlatformId) =>
@@ -271,6 +274,16 @@ const api = {
       const handler = (_e: unknown, act: ClassroomActivityItem): void => cb(act)
       ipcRenderer.on('classroom:activity-notify', handler)
       return () => ipcRenderer.removeListener('classroom:activity-notify', handler)
+    },
+    onNotificationClicked: (
+      cb: (evt: { platformId: PlatformId; activityId: string; sourceUrl: string | null }) => void
+    ): (() => void) => {
+      const handler = (
+        _e: unknown,
+        evt: { platformId: PlatformId; activityId: string; sourceUrl: string | null }
+      ): void => cb(evt)
+      ipcRenderer.on('classroom:notification-clicked', handler)
+      return () => ipcRenderer.removeListener('classroom:notification-clicked', handler)
     }
   }
 }

@@ -14,7 +14,9 @@ import {
   FileText,
   HelpCircle,
   Layers,
-  Camera
+  Camera,
+  ExternalLink,
+  Sparkles
 } from 'lucide-react'
 import type { PlaybackObservation, TaskType, PlayPolicy } from '@shared/types'
 import { observedProgressPercent, ALLOWED_PLAYBACK_RATES } from '@shared/video'
@@ -69,7 +71,10 @@ export function VideoScene({
   onRateChange,
   onLoadFixture,
   onSimulateLifecycle,
-  onCaptureAndAskAi
+  onCaptureAndAskAi,
+  onExtractAndAskAi,
+  onBackToCourses,
+  onOpenPlatformPage
 }: {
   platformName: string
   observation: PlaybackObservation | null
@@ -94,6 +99,9 @@ export function VideoScene({
   onLoadFixture: () => void
   onSimulateLifecycle?: (input: { visibility?: 'visible' | 'hidden'; focus?: 'focus' | 'blur' }) => void
   onCaptureAndAskAi?: () => void
+  onExtractAndAskAi?: () => void
+  onBackToCourses?: () => void
+  onOpenPlatformPage?: () => void
 }): ReactNode {
   const pct = observedProgressPercent(observation)
   const isPlaying = observation?.playerState === 'playing'
@@ -178,7 +186,9 @@ export function VideoScene({
                               ? 'rgb(251 191 36 / 0.3)'
                               : currentTask.taskType === 'other'
                                 ? 'rgb(148 163 184 / 0.3)'
-                                : 'rgb(99 102 241 / 0.3)',
+                                : currentTask.taskType === 'unknown'
+                                  ? 'rgb(148 163 184 / 0.25)'
+                                  : 'rgb(99 102 241 / 0.3)',
                         color: '#fff',
                         backdropFilter: 'blur(8px)'
                       }}
@@ -189,10 +199,55 @@ export function VideoScene({
                           ? '章节测验'
                           : currentTask.taskType === 'other'
                             ? '拓展任务'
-                            : '视频任务'}
+                            : currentTask.taskType === 'unknown'
+                              ? '待确认'
+                              : '视频任务'}
                     </span>
                   )}
                 </div>
+              </div>
+
+              {/* 顶部操作区（允许点击） */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, pointerEvents: 'auto' }}>
+                {onOpenPlatformPage && (
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{
+                      fontSize: 11,
+                      padding: '4px 10px',
+                      background: 'rgb(15 23 42 / 0.75)',
+                      borderColor: 'rgb(255 255 255 / 0.2)',
+                      color: '#fff',
+                      backdropFilter: 'blur(10px)'
+                    }}
+                    onClick={onOpenPlatformPage}
+                    title="在内置浏览器打开当前平台原始页面"
+                    data-testid="btn-open-platform-page"
+                  >
+                    <ExternalLink size={12} />
+                    平台原网页
+                  </button>
+                )}
+                {onBackToCourses && (
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{
+                      fontSize: 11,
+                      padding: '4px 10px',
+                      background: 'rgb(15 23 42 / 0.75)',
+                      borderColor: 'rgb(255 255 255 / 0.2)',
+                      color: '#fff',
+                      backdropFilter: 'blur(10px)'
+                    }}
+                    onClick={onBackToCourses}
+                    title="返回统一课程中心"
+                    data-testid="btn-back-to-courses"
+                  >
+                    返回课程中心
+                  </button>
+                )}
               </div>
             </div>
 
@@ -263,7 +318,7 @@ export function VideoScene({
               border: '1px solid var(--ch-border)'
             }}
           >
-            {currentTask?.taskType === 'doc' || currentTask?.taskType === 'quiz' || currentTask?.taskType === 'other' ? (
+            {currentTask?.taskType === 'doc' || currentTask?.taskType === 'quiz' || currentTask?.taskType === 'other' || currentTask?.taskType === 'unknown' ? (
               <div
                 style={{
                   display: 'flex',
@@ -287,17 +342,33 @@ export function VideoScene({
                       ? '文档任务'
                       : currentTask.taskType === 'quiz'
                         ? '测验任务'
-                        : '拓展任务'}
+                        : currentTask.taskType === 'unknown'
+                          ? '待确认'
+                          : '拓展任务'}
                   </span>
                   <span style={{ fontSize: 11.5, color: 'var(--ch-text-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {currentTask.taskType === 'doc'
                       ? '当前章节为在线文档或课件，请直接在上方内置视图中阅读，无需使用媒体控制条。'
                       : currentTask.taskType === 'quiz'
                         ? '当前章节为测验或作业，请在内置视图中作答，可展开右侧 AI 助手辅助分析。'
-                        : '当前章节为其他拓展任务，请直接在内置视图中查看。'}
+                        : currentTask.taskType === 'unknown'
+                          ? '任务类型待确认，请直接在上方内置视图中查看，可使用 AI 助教辅助。'
+                          : '当前章节为其他拓展任务，请直接在内置视图中查看。'}
                   </span>
                 </div>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  {onExtractAndAskAi && (
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={onExtractAndAskAi}
+                      title="提取当前页面题目并唤起右侧 AI 分析"
+                      data-testid="video-extract-ai-btn"
+                    >
+                      <Sparkles size={13} />
+                      题目问 AI
+                    </button>
+                  )}
                   {onCaptureAndAskAi && (
                     <button
                       type="button"
@@ -545,26 +616,63 @@ export function VideoScene({
                 }}
               >
                 <Film size={22} style={{ color: 'var(--ch-text-3)', opacity: 0.6 }} />
-                <p style={{ fontSize: 11.5, color: 'var(--ch-text-2)', margin: '10px 0 0', lineHeight: 1.7 }}>
-                  当前平台没有已验证的视频任务来源。
-                  <br />
-                  可加载测试台 fixture 验证播放器观测能力。
-                </p>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  style={{ marginTop: 14 }}
-                  onClick={onLoadFixture}
-                  data-testid="btn-load-fixture"
-                >
-                  <Play size={14} />
-                  加载测试视频任务
-                </button>
+                {platformName === '测试台' ? (
+                  <>
+                    <p style={{ fontSize: 11.5, color: 'var(--ch-text-2)', margin: '10px 0 0', lineHeight: 1.7 }}>
+                      当前平台没有已验证的视频任务来源。
+                      <br />
+                      可加载测试台 fixture 验证播放器观测能力。
+                    </p>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      style={{ marginTop: 14 }}
+                      onClick={onLoadFixture}
+                      data-testid="btn-load-fixture"
+                    >
+                      <Play size={14} />
+                      加载测试视频任务
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <p style={{ fontSize: 11.5, color: 'var(--ch-text-2)', margin: '10px 0 0', lineHeight: 1.7 }}>
+                      当前课程在平台未发布在线章节目录或课件（平台官方提示暂无内容）。
+                      <br />
+                      可直接在左侧视图中浏览课程首页，或返回课程中心切换其他课程。
+                    </p>
+                    <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 14 }}>
+                      {onOpenPlatformPage && (
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={onOpenPlatformPage}
+                          title="在浏览器中查看原网页"
+                        >
+                          <ExternalLink size={13} />
+                          打开平台原网页
+                        </button>
+                      )}
+                      {onBackToCourses && (
+                        <button
+                          type="button"
+                          className="btn btn-primary"
+                          onClick={onBackToCourses}
+                          title="返回课程中心"
+                        >
+                          返回课程中心
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
               </div>
-              <Notice tone="info">
-                测试台使用随包分发的本地 fixture（真实 8 秒 MP4），
-                用于验证播放/暂停/进度观测，不产生任何平台学习记录。
-              </Notice>
+              {platformName === '测试台' && (
+                <Notice tone="info">
+                  测试台使用随包分发的本地 fixture（真实 8 秒 MP4），
+                  用于验证播放/暂停/进度观测，不产生任何平台学习记录。
+                </Notice>
+              )}
             </div>
           ) : (
             <ul

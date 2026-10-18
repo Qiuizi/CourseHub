@@ -758,6 +758,18 @@ describe('ChaoxingAdapter 与 YuketangAdapter 会话探测与业务接线', () =
             })
           )
         }
+        if (urlStr.includes('logs/learn')) {
+          return new Response(
+            JSON.stringify({
+              code: 0,
+              data: {
+                activities: [
+                  { id: 1001, type: 14, title: '体系结构第一讲PPT', courseware_id: 2001, is_finished: true }
+                ]
+              }
+            })
+          )
+        }
         return new Response('{}')
       }
     }

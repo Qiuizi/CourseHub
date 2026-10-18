@@ -191,6 +191,17 @@ export default function App(): JSX.Element {
       pushActivity(`【课堂活动通知】${act.courseName} · ${act.title}`)
       setNotice(`【课堂活动进行中】${act.courseName} - ${act.title}，点击课堂活动查看`)
     })
+    const unsub9 = api.events.onNotificationClicked((evt) => {
+      pushActivity(`点击通知：打开活动 [${evt.activityId}]`)
+      setNotice(`正在前往活动页面...`)
+      if (evt.platformId && ['chaoxing', 'yuketang', 'zhihuishu', 'testbed'].includes(evt.platformId)) {
+        setActiveId(evt.platformId)
+        setScene('browser')
+        if (evt.sourceUrl) {
+          void api.browser.navigate(evt.platformId, evt.sourceUrl)
+        }
+      }
+    })
     return () => {
       unsub1()
       unsub2()
@@ -200,6 +211,7 @@ export default function App(): JSX.Element {
       unsub6()
       unsub7()
       unsub8()
+      unsub9()
     }
   }, [api, activeId, pushActivity])
 
@@ -957,6 +969,15 @@ export default function App(): JSX.Element {
               })
             }}
             onCaptureAndAskAi={() => void handleDrawerCapture()}
+            onExtractAndAskAi={() => void handleDrawerExtract()}
+            onBackToCourses={() => setScene('courses')}
+            onOpenPlatformPage={() => {
+              setScene('browser')
+              const p = platforms.find((x) => x.id === activeId)
+              if (p?.homeUrl) {
+                void api.browser.navigate(activeId, p.homeUrl)
+              }
+            }}
           />
         )
 

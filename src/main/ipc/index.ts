@@ -5,13 +5,14 @@
  * 远程平台页面拿不到任何 preload，因此不可能调用这些通道。
  */
 
-import { app, BrowserWindow, ipcMain, session, nativeImage } from 'electron'
+import { app, BrowserWindow, ipcMain, session, nativeImage, Notification } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import type {
   AIResult,
   Bounds,
+  ClassroomActivityItem,
   ClassroomQuestion,
   GeoTestConfig,
   PlatformId,
@@ -104,6 +105,13 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     getWebContents: (platformId) => deps.browsers.get(platformId)?.webContents ?? null
   })
   const notifiedActivityIds = new Set<string>()
+  void deps.store.readJson<string[]>('cache/notified-activities.json', []).then((saved) => {
+    if (Array.isArray(saved)) {
+      for (const id of saved) {
+        if (typeof id === 'string') notifiedActivityIds.add(id)
+      }
+    }
+  })
 
   const handle = <T>(
     channel: string,
@@ -578,17 +586,120 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     const res = await adapter.listActivities(ses)
     if (res.state === 'supported' && Array.isArray(res.activities)) {
       const win = deps.getWindow()
+      let newlyNotified = false
       for (const act of res.activities) {
         if (act.status === 'open' && !notifiedActivityIds.has(act.id)) {
           notifiedActivityIds.add(act.id)
+          newlyNotified = true
+
+          // 1. 发送渲染进程事件
           if (win && !win.isDestroyed()) {
             win.webContents.send('classroom:activity-notify', act)
           }
+
+          // 2. 触发 Windows 原生桌面系统通知
+          if (Notification.isSupported()) {
+            try {
+              const notifTitle = `[${act.courseName || act.platformId}] ${act.title}`
+              const notifBody =
+                act.category === 'sign_in'
+                  ? '课堂签到正在进行，请在官方页面处理'
+                  : act.category === 'quiz'
+                    ? '有新发布的随堂作业/测验'
+                    : '发现新的课堂互动，点击前往查看'
+
+              const notification = new Notification({
+                title: notifTitle,
+                body: notifBody,
+                silent: false
+              })
+
+              notification.on('click', () => {
+                const targetWin = deps.getWindow()
+                if (targetWin) {
+                  if (targetWin.isMinimized()) targetWin.restore()
+                  targetWin.show()
+                  targetWin.focus()
+                  targetWin.webContents.send('classroom:notification-clicked', {
+                    platformId: act.platformId,
+                    activityId: act.id,
+                    sourceUrl: act.sourceUrl
+                  })
+                }
+              })
+
+              notification.show()
+            } catch {
+              // 桌面通知在特定环境静默降级
+            }
+          }
         }
+      }
+
+      if (newlyNotified) {
+        void deps.store.writeJson('cache/notified-activities.json', Array.from(notifiedActivityIds))
       }
     }
     return res
   })
+
+  handle('classroom:notified-ids', async () => {
+    return Array.from(notifiedActivityIds)
+  })
+
+  handle('classroom:test-notify', async (_e, payload) => {
+    const p = payload as { title?: unknown; courseName?: unknown; sourceUrl?: unknown; category?: unknown } | undefined
+    const testAct: ClassroomActivityItem = {
+      id: `test-act-${Date.now()}`,
+      platformId: 'testbed',
+      courseId: 'test-course-01',
+      courseName: typeof p?.courseName === 'string' ? p.courseName : '全栈自动化实战课',
+      classId: 'sec-01',
+      title: typeof p?.title === 'string' ? p.title : '随堂签到与活动通知',
+      category: (p?.category as any) || 'sign_in',
+      status: 'open',
+      startAt: new Date().toISOString(),
+      endAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+      sourceUrl: typeof p?.sourceUrl === 'string' ? p.sourceUrl : 'https://mooc1.chaoxing.com',
+      fetchedAt: new Date().toISOString(),
+      locationRequired: false,
+      locationText: null,
+      signInKind: 'normal',
+      confidence: 'high'
+    }
+    notifiedActivityIds.add(testAct.id)
+    await deps.store.writeJson('cache/notified-activities.json', Array.from(notifiedActivityIds))
+
+    const win = deps.getWindow()
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('classroom:activity-notify', testAct)
+    }
+
+    if (Notification.isSupported()) {
+      const notif = new Notification({
+        title: `[${testAct.courseName}] ${testAct.title}`,
+        body: '课堂活动已发布，点击前往官方页面处理',
+        silent: false
+      })
+      notif.on('click', () => {
+        const targetWin = deps.getWindow()
+        if (targetWin) {
+          if (targetWin.isMinimized()) targetWin.restore()
+          targetWin.show()
+          targetWin.focus()
+          targetWin.webContents.send('classroom:notification-clicked', {
+            platformId: testAct.platformId,
+            activityId: testAct.id,
+            sourceUrl: testAct.sourceUrl
+          })
+        }
+      })
+      notif.show()
+    }
+
+    return { ok: true, activity: testAct }
+  })
+
 
   handle('platform:courses', async (_e, payload) => {
     const p = payload as { platformId?: unknown }
