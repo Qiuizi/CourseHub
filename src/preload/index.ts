@@ -23,6 +23,13 @@ import type {
   CaptureViewOptions,
   CaptureViewResult
 } from '@shared/types'
+import type {
+  DiagnosticEvent,
+  DiagnosticPackageData,
+  FeedbackSubmissionPayload,
+  FeedbackSubmissionResult,
+  PlatformHealthReport
+} from '@shared/feedback'
 
 export interface PlatformSummary {
   id: PlatformId
@@ -48,7 +55,8 @@ const api = {
     courses: (platformId: PlatformId) =>
       invoke<{ state: string; courses: unknown[]; error?: string }>('platform:courses', { platformId }),
     chapters: (input: { platformId: PlatformId; courseId: string; clazzId: string; cpi?: string }) =>
-      invoke<{ ok: boolean; chapters: ChapterNode[]; enc?: string; error?: string }>('platform:chapters', input)
+      invoke<{ ok: boolean; chapters: ChapterNode[]; enc?: string; error?: string }>('platform:chapters', input),
+    health: () => invoke<Record<PlatformId, PlatformHealthReport>>('platform:health')
   },
   testbed: {
     loadFixture: (fixture: string) =>
@@ -207,6 +215,19 @@ const api = {
   },
   diagnostics: {
     export: () => invoke<{ exported: boolean; path: string; note: string }>('diagnostics:export'),
+    getSummary: (input?: { activePlatform?: PlatformId }) =>
+      invoke<DiagnosticPackageData>('diagnostics:get-summary', input),
+    exportZip: (input?: { activePlatform?: PlatformId; feedbackNote?: string; screenshotBase64?: string }) =>
+      invoke<{ path: string; bytes: number; filename: string }>('diagnostics:export-zip', input),
+    recordError: (error: {
+      module?: 'renderer' | 'system' | 'ai' | 'video'
+      type?: string
+      code?: string
+      summary?: string
+      platform?: PlatformId
+      data?: Record<string, unknown>
+      stack?: string
+    }) => invoke<DiagnosticEvent>('diagnostics:record-error', error),
     viewState: () => invoke<{ browsers: unknown[]; count: number }>('debug:view-state'),
     capture: (platformId: PlatformId) =>
       invoke<{ path: string; bytes: number; size: { width: number; height: number } }>(
@@ -214,10 +235,14 @@ const api = {
         { platformId }
       ),
     captureWindow: (name: string) =>
-      invoke<{ path: string; bytes: number; size: { width: number; height: number } }>(
+      invoke<{ path: string; bytes: number; size: { width: number; height: number }; base64?: string }>(
         'debug:capture-window',
         { name }
       )
+  },
+  feedback: {
+    submit: (payload: FeedbackSubmissionPayload) =>
+      invoke<FeedbackSubmissionResult>('feedback:submit', payload)
   },
   events: {
     onVideoObservation: (cb: (obs: PlaybackObservation) => void): (() => void) => {

@@ -22,7 +22,8 @@ import type {
 import { ok, toErrorResult, CodedError } from '@shared/ipc'
 import { isAllowedRate } from '@shared/video'
 import { validateGeoPoint } from '@shared/geo'
-import { getAdapter } from '../adapters'
+import { getAdapter, getAllPlatformHealth } from '../adapters'
+import type { FeedbackSubmissionPayload } from '@shared/feedback'
 import {
   PLATFORM_CONFIGS,
   PlatformBrowser,
@@ -1441,7 +1442,7 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     const png = img.toPNG()
     const out = path.join(app.getPath('temp'), `coursehub-win-${name}.png`)
     await fs.writeFile(out, png)
-    return { path: out, bytes: png.length, size: img.getSize() }
+    return { path: out, bytes: png.length, size: img.getSize(), base64: img.toDataURL() }
   })
 
   handle('diagnostics:export', async () => {
@@ -1450,6 +1451,136 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     await deps.store.writeJson('cache/diagnostics.json', redacted)
     // 明确不含截图、Token、Cookie
     return { exported: true, path: 'cache/diagnostics.json', note: '已脱敏，不含截图与令牌' }
+  })
+
+  handle('platform:health', async () => {
+    return getAllPlatformHealth()
+  })
+
+  handle('diagnostics:get-summary', async (_event, payload: unknown) => {
+    const input = (payload && typeof payload === 'object' ? payload : {}) as {
+      activePlatform?: PlatformId
+    }
+    return await deps.store.buildDiagnosticPackage(
+      input.activePlatform || 'chaoxing',
+      getAllPlatformHealth()
+    )
+  })
+
+  handle('diagnostics:export-zip', async (_event, payload: unknown) => {
+    const input = (payload && typeof payload === 'object' ? payload : {}) as {
+      activePlatform?: PlatformId
+      feedbackNote?: string
+      screenshotBase64?: string
+    }
+    return await deps.store.exportDiagnosticZip({
+      activePlatform: input.activePlatform || 'chaoxing',
+      feedbackNote: input.feedbackNote,
+      screenshotBase64: input.screenshotBase64,
+      healthReports: getAllPlatformHealth()
+    })
+  })
+
+  handle('diagnostics:record-error', async (_event, payload: unknown) => {
+    const item = (payload && typeof payload === 'object' ? payload : {}) as {
+      module?: 'renderer' | 'system' | 'ai' | 'video'
+      type?: string
+      code?: string
+      summary?: string
+      platform?: PlatformId
+      data?: Record<string, unknown>
+      stack?: string
+    }
+    return await deps.store.recordDiagnostic({
+      module: item.module || 'renderer',
+      level: 'error',
+      type: item.type || 'renderer_error',
+      code: item.code || 'RENDERER_ERROR',
+      summary: item.summary || '未说明异常',
+      platform: item.platform,
+      data: item.data,
+      stack: item.stack
+    })
+  })
+
+  handle('feedback:submit', async (_event, payload: unknown) => {
+    const data = payload as FeedbackSubmissionPayload
+    if (!data || typeof data !== 'object') {
+      throw new CodedError('INVALID_REQUEST', '缺少反馈载荷')
+    }
+    if (!data.description || data.description.trim().length < 5) {
+      throw new CodedError('INVALID_REQUEST', '请详细描述遇到的问题（至少 5 个字）')
+    }
+
+    const now = new Date()
+    const pad = (n: number): string => String(n).padStart(2, '0')
+    const dateStr = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
+    const randStr = Math.random().toString(36).substring(2, 6).toUpperCase()
+    const feedbackId = `FB-${dateStr}-${randStr}`
+
+    // 检查是否有配置线上反馈服务
+    const remoteEndpoint = process.env.COURSEHUB_FEEDBACK_ENDPOINT
+    let submittedOnline = false
+    let onlineMsg = ''
+    let issueNum: number | undefined
+
+    if (remoteEndpoint) {
+      try {
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), 6000)
+        const resp = await fetch(remoteEndpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...data, feedbackId }),
+          signal: controller.signal
+        })
+        clearTimeout(timer)
+        if (resp.ok) {
+          const resJson = (await resp.json().catch(() => null)) as Record<string, unknown>
+          submittedOnline = true
+          onlineMsg = typeof resJson?.message === 'string' ? resJson.message : '反馈已成功提交至云端'
+          issueNum = typeof resJson?.issueNumber === 'number' ? resJson.issueNumber : undefined
+        }
+      } catch {
+        submittedOnline = false
+      }
+    }
+
+    if (submittedOnline) {
+      return {
+        success: true,
+        feedbackId,
+        createdAt: now.toISOString(),
+        message: onlineMsg || `反馈已成功提交（编号：${feedbackId}），维护者将尽快排查！`,
+        issueNumber: issueNum
+      }
+    }
+
+    // 离线兜底：自动在本地生成脱敏诊断 ZIP 包，保留所有输入
+    const zipExport = await deps.store.exportDiagnosticZip({
+      feedbackNote: [
+        `[反馈分类] ${data.category}`,
+        `[问题描述] ${data.description}`,
+        data.reproductionSteps ? `[复现步骤] ${data.reproductionSteps}` : null,
+        data.contact ? `[联系方式] ${data.contact}` : null
+      ]
+        .filter(Boolean)
+        .join('\n'),
+      screenshotBase64: data.screenshotBase64,
+      healthReports: getAllPlatformHealth()
+    })
+
+    return {
+      success: false,
+      feedbackId,
+      createdAt: now.toISOString(),
+      offlineFallback: true,
+      diagnosticZipPath: zipExport.path,
+      message:
+        '在线反馈通道暂不可用，已自动在本地生成脱敏诊断包：' +
+        zipExport.path +
+        '。你可通过微信、QQ或邮件将其发送给维护者。'
+    }
   })
 
   return {

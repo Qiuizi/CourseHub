@@ -11,6 +11,7 @@ import {
   Sparkles
 } from 'lucide-react'
 import type { PlatformId, PlaybackObservation, GeoTestRun, ClassroomQuestion, PlayPolicy, TaskType, AIModelInfo, AIResult, ActiveQuestionContext, ClassroomActivityItem } from '@shared/types'
+import type { FeedbackCategory } from '@shared/feedback'
 import { TopBar, SCENES, type SceneId, type PlatformEntry } from './components/TopBar'
 import { Drawer, type SubmitMode } from './components/Drawer'
 import { CapChip, Notice } from './components/ui'
@@ -96,6 +97,7 @@ export default function App(): JSX.Element {
   const activeContextIdRef = useRef<string | null>(null)
   const [activity, setActivity] = useState<{ id: string; time: string; title: string }[]>([])
   const [theme, setTheme] = useState<'light' | 'dark'>('light')
+  const [feedbackPrefill, setFeedbackPrefill] = useState<{ category: FeedbackCategory; description: string } | null>(null)
 
   const [tasks, setTasks] = useState<ChapterTask[]>([])
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
@@ -1295,6 +1297,10 @@ export default function App(): JSX.Element {
             onSwitchPlatform={(targetPlat) => {
               setActiveId(targetPlat)
             }}
+            onOpenFeedback={(cat, desc) => {
+              setFeedbackPrefill({ category: cat, description: desc })
+              setScene('settings')
+            }}
           />
         )
 
@@ -1355,6 +1361,9 @@ export default function App(): JSX.Element {
             onThemeChange={setTheme}
             onModelsChanged={() => void refreshModels()}
             onNotify={setNotice}
+            activePlatform={activeId}
+            prefillCategory={feedbackPrefill?.category}
+            prefillDescription={feedbackPrefill?.description}
           />
         )
 

@@ -11,18 +11,22 @@ import {
   ChevronDown,
   ChevronUp,
   Moon,
-  Sun,
-  FileDown
+  Sun
 } from 'lucide-react'
 import { Card, Notice, Rows, Seg, Switch, CapChip, Empty } from '../components/ui'
 import { isRetiredAlias, KNOWN_MODELS, LEGACY_REFERENCE_MODELS } from '@shared/deepseek'
-import type { AIModelInfo } from '@shared/types'
+import type { AIModelInfo, PlatformId } from '@shared/types'
+import type { FeedbackCategory } from '@shared/feedback'
+import { FeedbackCard } from './FeedbackCard'
 
 export interface SettingsSceneProps {
   theme: 'light' | 'dark'
   onThemeChange: (t: 'light' | 'dark') => void
   onModelsChanged: () => void
   onNotify: (text: string) => void
+  activePlatform?: PlatformId
+  prefillCategory?: FeedbackCategory
+  prefillDescription?: string
 }
 
 /**
@@ -35,7 +39,10 @@ export function SettingsScene({
   theme,
   onThemeChange,
   onModelsChanged,
-  onNotify
+  onNotify,
+  activePlatform = 'chaoxing',
+  prefillCategory,
+  prefillDescription
 }: SettingsSceneProps): ReactNode {
   const [key, setKey] = useState('')
   const [showKey, setShowKey] = useState(false)
@@ -45,7 +52,6 @@ export function SettingsScene({
   const [modelError, setModelError] = useState<string | null>(null)
   const [loadingModels, setLoadingModels] = useState(false)
   const [notifications, setNotifications] = useState(true)
-  const [diag, setDiag] = useState<string | null>(null)
 
   const [modelSource, setModelSource] = useState<'online' | 'offline' | null>(null)
 
@@ -323,27 +329,13 @@ export function SettingsScene({
         </div>
       </Card>
 
-      {/* ---------------- 诊断 ---------------- */}
-      <Card title="诊断">
-        <button
-          type="button"
-          className="btn"
-          onClick={() => {
-            void window.coursehub.diagnostics.export().then((r) => {
-              setDiag(r.ok ? `${r.data.note} → ${r.data.path}` : `失败：${r.error.message}`)
-            })
-          }}
-        >
-          <FileDown size={13} />
-          导出脱敏诊断
-        </button>
-        {diag && (
-          <p style={{ fontSize: 11, color: 'var(--ch-text-2)', margin: '10px 0 0' }}>{diag}</p>
-        )}
-        <p style={{ fontSize: 10.5, color: 'var(--ch-text-3)', margin: '10px 0 0', lineHeight: 1.6 }}>
-          诊断包不含截图、Cookie、Token 与密钥明文。
-        </p>
-      </Card>
+      {/* ---------------- 帮助与反馈 ---------------- */}
+      <FeedbackCard
+        activePlatform={activePlatform}
+        onNotify={onNotify}
+        initialCategory={prefillCategory}
+        initialDescription={prefillDescription}
+      />
 
       <Card title="离线参考模型（未配置 Key 时的内置兜底）">
         <p style={{ fontSize: 11, color: 'var(--ch-text-2)', margin: '0 0 8px', lineHeight: 1.7 }}>

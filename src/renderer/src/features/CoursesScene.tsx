@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import { Card, Empty, Notice } from '../components/ui'
 import type { PlatformId } from '@shared/types'
+import type { FeedbackCategory } from '@shared/feedback'
 
 export interface CourseItem {
   courseId: string
@@ -39,6 +40,7 @@ export interface CoursesSceneProps {
   onNavigateCourse: (url: string, targetPlatform?: PlatformId) => void
   onEnterCourseStudy?: (course: CourseItem) => void
   onSwitchPlatform?: (targetPlatform: PlatformId) => void
+  onOpenFeedback?: (category: FeedbackCategory, description: string) => void
 }
 
 interface PlatformLoadStatus {
@@ -64,7 +66,8 @@ export function CoursesScene({
   onOpenPlatform,
   onNavigateCourse,
   onEnterCourseStudy,
-  onSwitchPlatform
+  onSwitchPlatform,
+  onOpenFeedback
 }: CoursesSceneProps): ReactNode {
   // 平台独立在读课程状态（从 localStorage 读取上次成功同步持久化缓存，防进程重启清空）
   const [cxCourses, setCxCourses] = useState<CourseItem[]>(() => {
@@ -428,6 +431,98 @@ export function CoursesScene({
             >
               登录雨课堂
             </button>
+          </div>
+        </Notice>
+      )}
+
+      {/* 雨课堂异常提示条（优雅降级与反馈） */}
+      {yktStatus.state === 'error' && !isYktUnauth && (
+        <Notice tone="warn">
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', flexWrap: 'wrap', gap: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11.5 }}>
+              <AlertCircle size={15} style={{ color: '#d97706', flexShrink: 0 }} />
+              <span>
+                雨课堂课程暂时无法同步，可能是平台更新或网络异常。你仍可以打开原平台，也可以向开发者反馈问题。
+                {yktCourses.length > 0 && `（已为你保留上次成功同步的 ${yktCourses.length} 门课程缓存）`}
+              </span>
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => void loadCourses('yuketang')}
+                style={{ padding: '3px 10px', fontSize: 11 }}
+              >
+                重试
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  if (onSwitchPlatform) onSwitchPlatform('yuketang')
+                  onOpenPlatform('yuketang')
+                }}
+                style={{ padding: '3px 10px', fontSize: 11 }}
+              >
+                打开原平台
+              </button>
+              {onOpenFeedback && (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => onOpenFeedback('course_sync', `雨课堂课程同步异常: ${yktStatus.error || '解析失败'}`)}
+                  style={{ padding: '3px 10px', fontSize: 11 }}
+                >
+                  反馈问题
+                </button>
+              )}
+            </div>
+          </div>
+        </Notice>
+      )}
+
+      {/* 学习通接口异常提示条 */}
+      {cxStatus.state === 'error' && !isCxUnauth && !isCxCaptcha && (
+        <Notice tone="warn">
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', flexWrap: 'wrap', gap: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11.5 }}>
+              <AlertCircle size={15} style={{ color: '#d97706', flexShrink: 0 }} />
+              <span>
+                学习通课程暂时无法同步，可能是平台更新或网络异常。你仍可以打开原平台，也可以向开发者反馈问题。
+                {cxCourses.length > 0 && `（已为你保留上次成功同步的 ${cxCourses.length} 门课程缓存）`}
+              </span>
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => void loadCourses('chaoxing')}
+                style={{ padding: '3px 10px', fontSize: 11 }}
+              >
+                重试
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  if (onSwitchPlatform) onSwitchPlatform('chaoxing')
+                  onOpenPlatform('chaoxing')
+                }}
+                style={{ padding: '3px 10px', fontSize: 11 }}
+              >
+                打开原平台
+              </button>
+              {onOpenFeedback && (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => onOpenFeedback('course_sync', `学习通课程同步异常: ${cxStatus.error || '解析失败'}`)}
+                  style={{ padding: '3px 10px', fontSize: 11 }}
+                >
+                  反馈问题
+                </button>
+              )}
+            </div>
           </div>
         </Notice>
       )}
