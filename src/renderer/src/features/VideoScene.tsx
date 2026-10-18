@@ -492,70 +492,83 @@ export function VideoScene({
             )}
           </div>
 
-          {/* 双状态对照 */}
-          <Card title="播放器状态 / 平台任务状态（互相独立）">
-            <Rows
-              items={[
-                {
-                  k: '播放器状态',
-                  v: (
-                    <span data-testid="player-state">
-                      {observation
-                        ? observation.playerState
-                        : currentTask?.taskType === 'doc'
-                          ? '在线文档（非媒体）'
-                          : currentTask?.taskType === 'quiz'
-                            ? '在线测验（非媒体）'
-                            : currentTask?.taskType === 'other'
-                              ? '拓展任务（非媒体）'
-                              : '未观测'}
-                      {observation && (
-                        <span className="chip chip-neutral" style={{ marginLeft: 8 }}>
-                          {observation.origin}
-                        </span>
-                      )}
-                    </span>
-                  )
-                },
-                {
-                  k: '平台任务状态',
-                  v: currentTask ? (
-                    <span
-                      data-testid="platform-task-status"
-                      className={`chip ${
-                        currentTask.platformStatus === 'completed'
-                          ? 'chip-emerald'
+          {/* 双状态对照（可折叠详情，保留原有 testid 且不遮挡主学习视口） */}
+          <details
+            style={{
+              borderRadius: 'var(--r-block)',
+              border: '1px solid var(--ch-border)',
+              background: 'var(--ch-surface)',
+              padding: '10px 16px',
+              fontSize: 12
+            }}
+          >
+            <summary style={{ cursor: 'pointer', color: 'var(--ch-text-3)', fontWeight: 500 }}>
+              查看播放器与平台任务状态详细信息
+            </summary>
+            <div style={{ marginTop: 10 }}>
+              <Rows
+                items={[
+                  {
+                    k: '播放器状态',
+                    v: (
+                      <span data-testid="player-state">
+                        {observation
+                          ? observation.playerState
+                          : currentTask?.taskType === 'doc'
+                            ? '在线文档（非媒体）'
+                            : currentTask?.taskType === 'quiz'
+                              ? '在线测验（非媒体）'
+                              : currentTask?.taskType === 'other'
+                                ? '拓展任务（非媒体）'
+                                : '未观测'}
+                        {observation && (
+                          <span className="chip chip-neutral" style={{ marginLeft: 8 }}>
+                            {observation.origin}
+                          </span>
+                        )}
+                      </span>
+                    )
+                  },
+                  {
+                    k: '平台任务状态',
+                    v: currentTask ? (
+                      <span
+                        data-testid="platform-task-status"
+                        className={`chip ${
+                          currentTask.platformStatus === 'completed'
+                            ? 'chip-emerald'
+                            : currentTask.platformStatus === 'in_progress'
+                              ? 'chip-tint'
+                              : 'chip-neutral'
+                        }`}
+                      >
+                        {currentTask.platformStatus === 'completed'
+                          ? '已完成'
                           : currentTask.platformStatus === 'in_progress'
-                            ? 'chip-tint'
-                            : 'chip-neutral'
-                      }`}
-                    >
-                      {currentTask.platformStatus === 'completed'
-                        ? '已完成'
-                        : currentTask.platformStatus === 'in_progress'
-                          ? '进行中'
-                          : currentTask.platformStatus === 'not_started'
-                            ? '未开始'
-                            : '待验证'}
-                    </span>
-                  ) : (
-                    <CapChip state="unverified" reason="平台接口未在真实账号验证，故不显示任何完成状态" />
-                  )
-                },
-                {
-                  k: '观测时间',
-                  v: observation ? new Date(observation.observedAt).toLocaleTimeString() : '—',
-                  mono: true
-                }
-              ]}
-            />
-            <div style={{ marginTop: 12 }}>
-              <Notice tone="warn">
-                播放器 <code>ended</code> 只代表本机媒体播完，<strong>不会</strong>
-                把平台任务状态改成「已完成」。平台状态只能由平台接口返回。
-              </Notice>
+                            ? '进行中'
+                            : currentTask.platformStatus === 'not_started'
+                              ? '未开始'
+                              : '待验证'}
+                      </span>
+                    ) : (
+                      <CapChip state="unverified" reason="平台接口未在真实账号验证，故不显示任何完成状态" />
+                    )
+                  },
+                  {
+                    k: '观测时间',
+                    v: observation ? new Date(observation.observedAt).toLocaleTimeString() : '—',
+                    mono: true
+                  }
+                ]}
+              />
+              <div style={{ marginTop: 12 }}>
+                <Notice tone="warn">
+                  播放器 <code>ended</code> 只代表本机媒体播完，<strong>不会</strong>
+                  把平台任务状态改成「已完成」。平台状态只能由平台接口返回。
+                </Notice>
+              </div>
             </div>
-          </Card>
+          </details>
         </div>
 
         {/* ---------------- 右：章节目录 ---------------- */}
@@ -832,50 +845,52 @@ export function VideoScene({
             </div>
           )}
 
-          {/* 页面生命周期与失焦测试 */}
-          <div style={{ marginTop: 14 }}>
-            <Card title="生命周期与失焦测试（测试台）">
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  <button
-                    type="button"
-                    className="btn"
-                    style={{ fontSize: 11, flex: 1 }}
-                    onClick={() => onSimulateLifecycle?.({ focus: 'blur' })}
-                  >
-                    模拟失焦 (Blur)
-                  </button>
-                  <button
-                    type="button"
-                    className="btn"
-                    style={{ fontSize: 11, flex: 1 }}
-                    onClick={() => onSimulateLifecycle?.({ visibility: 'hidden' })}
-                  >
-                    切入后台 (Hidden)
-                  </button>
+          {/* 页面生命周期与失焦测试（仅测试台显示） */}
+          {platformName === '测试台' && (
+            <div style={{ marginTop: 14 }}>
+              <Card title="生命周期与失焦测试（测试台）">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      className="btn"
+                      style={{ fontSize: 11, flex: 1 }}
+                      onClick={() => onSimulateLifecycle?.({ focus: 'blur' })}
+                    >
+                      模拟失焦 (Blur)
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      style={{ fontSize: 11, flex: 1 }}
+                      onClick={() => onSimulateLifecycle?.({ visibility: 'hidden' })}
+                    >
+                      切入后台 (Hidden)
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      className="btn"
+                      style={{ fontSize: 11, flex: 1 }}
+                      onClick={() => onSimulateLifecycle?.({ visibility: 'visible', focus: 'focus' })}
+                    >
+                      恢复前台 (Visible)
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      style={{ fontSize: 11, flex: 1 }}
+                      onClick={() => onCommand('seek', 7.5)}
+                      title="跳转到 7.5s 快速验证自然 ended 连播"
+                    >
+                      快进至 7.5s
+                    </button>
+                  </div>
                 </div>
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  <button
-                    type="button"
-                    className="btn"
-                    style={{ fontSize: 11, flex: 1 }}
-                    onClick={() => onSimulateLifecycle?.({ visibility: 'visible', focus: 'focus' })}
-                  >
-                    恢复前台 (Visible)
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    style={{ fontSize: 11, flex: 1 }}
-                    onClick={() => onCommand('seek', 7.5)}
-                    title="跳转到 7.5s 快速验证自然 ended 连播"
-                  >
-                    快进至 7.5s
-                  </button>
-                </div>
-              </div>
-            </Card>
-          </div>
+              </Card>
+            </div>
+          )}
         </Card>
       </div>
     </div>

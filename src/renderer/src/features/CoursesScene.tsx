@@ -15,7 +15,7 @@ import {
   Sparkles,
   Calendar
 } from 'lucide-react'
-import { Card, CapChip, Empty, Notice } from '../components/ui'
+import { Card, Empty, Notice } from '../components/ui'
 import type { PlatformId } from '@shared/types'
 
 export interface CourseItem {
@@ -59,8 +59,8 @@ export type SyncLifecycle =
   | 'unauthenticated'
 
 export function CoursesScene({
-  platformId,
-  platformName,
+  platformId: _platformId,
+  platformName: _platformName,
   onOpenPlatform,
   onNavigateCourse,
   onEnterCourseStudy,
@@ -84,12 +84,12 @@ export function CoursesScene({
   const [cxSyncedAt, setCxSyncedAt] = useState<string | null>(() => {
     return localStorage.getItem('coursehub_synced_at_cx') || null
   })
-  const [yktSyncedAt, setYktSyncedAt] = useState<string | null>(() => {
+  const [_yktSyncedAt, setYktSyncedAt] = useState<string | null>(() => {
     return localStorage.getItem('coursehub_synced_at_ykt') || null
   })
 
   const [loading, setLoading] = useState(false)
-  const [fetchedAt, setFetchedAt] = useState<string | null>(null)
+  const [_fetchedAt, setFetchedAt] = useState<string | null>(null)
 
   // 双平台生命周期状态（明确区分：本次成功、使用上次缓存、需要验证码、网络错误、确认无课程、未登录）
   const [cxSyncState, setCxSyncState] = useState<SyncLifecycle>(() => {
@@ -113,9 +113,9 @@ export function CoursesScene({
     count: 0
   })
 
-  // 筛选与搜索
+  // 筛选与搜索：默认优先展示当前学期在读课程，降低认知负荷
   const [selectedPlatform, setSelectedPlatform] = useState<'all' | 'chaoxing' | 'yuketang'>('all')
-  const [selectedTermFilter, setSelectedTermFilter] = useState<'all' | 'current' | 'history'>('all')
+  const [selectedTermFilter, setSelectedTermFilter] = useState<'all' | 'current' | 'history'>('current')
   const [searchKeyword, setSearchKeyword] = useState<string>('')
 
   // 请求序号，防止并发刷新乱序与旧请求覆盖新请求
@@ -454,40 +454,19 @@ export function CoursesScene({
       )}
 
       <Card
-        title={`跨平台课程中心（当前聚焦：${platformName}）`}
+        title="我的课程"
         action={
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <CapChip
-              state={courses.length > 0 ? 'supported' : cxStatus.state === 'error' && yktStatus.state === 'error' ? 'error' : 'unverified'}
-              reason={`已读取双平台共 ${courses.length} 门在读课程`}
-              compact
-            />
-            {fetchedAt && (
-              <span
-                style={{ fontSize: 11, color: 'var(--ch-text-3)' }}
-                title={yktSyncedAt ? `雨课堂最近同步: ${yktSyncedAt}` : undefined}
-              >
-                更新于 {fetchedAt}
-              </span>
-            )}
             <button
               type="button"
-              className="btn"
+              className="btn btn-primary"
               onClick={() => void loadCourses('all')}
               disabled={loading}
               data-testid="courses-refresh"
+              style={{ fontSize: 11.5, padding: '4px 12px', borderRadius: 999 }}
             >
-              <RefreshCw size={13} className={loading ? 'spin' : undefined} />
-              刷新全部课程
-            </button>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => onOpenPlatform(platformId)}
-              title={`在软件内打开当前平台主页`}
-            >
-              <Globe size={13} />
-              平台浏览器
+              <RefreshCw size={12} className={loading ? 'spin' : undefined} />
+              {loading ? '正在同步...' : '刷新课程'}
             </button>
           </div>
         }
@@ -761,13 +740,13 @@ export function CoursesScene({
                           position: 'absolute',
                           top: 8,
                           left: 8,
-                          background: isYkt ? 'rgba(16, 185, 129, 0.9)' : 'rgba(99, 102, 241, 0.9)',
+                          background: isYkt ? '#059669' : '#4f46e5',
                           color: '#fff',
                           fontSize: 10,
                           fontWeight: 600,
                           padding: '2px 8px',
                           borderRadius: 4,
-                          boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+                          boxShadow: '0 1px 3px rgba(0,0,0,0.25)',
                           display: 'flex',
                           alignItems: 'center',
                           gap: 4
@@ -777,44 +756,29 @@ export function CoursesScene({
                         {isYkt ? '雨课堂' : '学习通'}
                       </div>
 
-                      <div
-                        style={{
-                          position: 'absolute',
-                          top: 8,
-                          right: 8,
-                          background: 'rgba(0,0,0,0.65)',
-                          color: '#fff',
-                          fontSize: 10,
-                          padding: '2px 6px',
-                          borderRadius: 4
-                        }}
-                      >
-                        ID: {c.courseId}
-                      </div>
-
-                      {/* 学期 Badge */}
-                      <div
-                        style={{
-                          position: 'absolute',
-                          bottom: 8,
-                          left: 8,
-                          background: c.isCurrentTerm ? 'rgba(16, 185, 129, 0.9)' : 'rgba(100, 116, 139, 0.85)',
-                          color: '#fff',
-                          fontSize: 10,
-                          fontWeight: 500,
-                          padding: '2px 6px',
-                          borderRadius: 4,
-                          boxShadow: '0 1px 2px rgba(0,0,0,0.3)'
-                        }}
-                      >
-                        {c.termLabel || (c.isCurrentTerm ? '本学期' : '往期历史')}
-                      </div>
+                      {/* 仅在非本学期时显示历史标识，本学期保持留白清爽 */}
+                      {!c.isCurrentTerm && (
+                        <div
+                          style={{
+                            position: 'absolute',
+                            bottom: 8,
+                            right: 8,
+                            background: 'rgba(0,0,0,0.6)',
+                            color: '#fff',
+                            fontSize: 9.5,
+                            padding: '2px 6px',
+                            borderRadius: 4
+                          }}
+                        >
+                          {c.termLabel || '往期历史'}
+                        </div>
+                      )}
                     </div>
 
                     {/* 课程内容 */}
                     <div
                       style={{
-                        padding: 12,
+                        padding: '12px 14px',
                         display: 'flex',
                         flexDirection: 'column',
                         flex: 1,
@@ -844,19 +808,11 @@ export function CoursesScene({
                           style={{
                             display: 'flex',
                             flexDirection: 'column',
-                            gap: 4,
+                            gap: 3,
                             fontSize: 11,
-                            color: 'var(--ch-text-2)'
+                            color: 'var(--ch-text-3)'
                           }}
                         >
-                          {c.clazzName && (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                              <Users size={12} style={{ color: 'var(--ch-accent)', flexShrink: 0 }} />
-                              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.clazzName}>
-                                {c.clazzName}
-                              </span>
-                            </div>
-                          )}
                           {c.teacherName && (
                             <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                               <User size={12} style={{ color: 'var(--ch-text-3)', flexShrink: 0 }} />
@@ -865,17 +821,21 @@ export function CoursesScene({
                               </span>
                             </div>
                           )}
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 5, color: 'var(--ch-text-3)', fontSize: 10 }}>
-                            <span>班级ID: {c.classId}</span>
-                            {c.termLabel && <span>· {c.termLabel}</span>}
-                          </div>
+                          {c.clazzName && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                              <Users size={12} style={{ color: 'var(--ch-accent)', flexShrink: 0 }} />
+                              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.clazzName}>
+                                {c.clazzName}
+                              </span>
+                            </div>
+                          )}
                         </div>
                       </div>
 
                       <div style={{ paddingTop: 8, borderTop: '1px solid var(--ch-border)', display: 'flex', gap: 8 }}>
                         <button
                           type="button"
-                          className="btn accent"
+                          className="btn btn-primary"
                           onClick={() => {
                             if (onEnterCourseStudy) {
                               onEnterCourseStudy(c)

@@ -10,12 +10,12 @@ import {
   Camera,
   Sparkles
 } from 'lucide-react'
-import type { PlatformId, PlaybackObservation, GeoTestRun, ClassroomQuestion, PlayPolicy, TaskType, AIModelInfo, AIResult, ActiveQuestionContext } from '@shared/types'
+import type { PlatformId, PlaybackObservation, GeoTestRun, ClassroomQuestion, PlayPolicy, TaskType, AIModelInfo, AIResult, ActiveQuestionContext, ClassroomActivityItem } from '@shared/types'
 import { TopBar, SCENES, type SceneId, type PlatformEntry } from './components/TopBar'
 import { Drawer, type SubmitMode } from './components/Drawer'
 import { CapChip, Notice } from './components/ui'
 import { VideoScene, type ChapterTask } from './features/VideoScene'
-import { DashboardScene } from './features/DashboardScene'
+import { DashboardScene, type RecentStudyRecord } from './features/DashboardScene'
 import { SignInScene } from './features/SignInScene'
 import { QuizScene } from './features/QuizScene'
 import { GeoScene } from './features/GeoScene'
@@ -29,7 +29,7 @@ const TEST_TASKS: ChapterTask[] = [
 ]
 
 export default function App(): JSX.Element {
-  const [scene, setScene] = useState<SceneId>('courses')
+  const [scene, setScene] = useState<SceneId>('dashboard')
   const [platforms, setPlatforms] = useState<PlatformEntry[]>([])
   const [activeId, setActiveId] = useState<PlatformId>(() => {
     try {
@@ -41,6 +41,28 @@ export default function App(): JSX.Element {
     return 'chaoxing' // 默认优先进入实际业务平台
   })
   const [drawerOpen, setDrawerOpen] = useState(true)
+
+  // 课程与活动聚合（供首页与全局状态复用）
+  const [allCourses, setAllCourses] = useState<CourseItem[]>(() => {
+    try {
+      const cxRaw = localStorage.getItem('coursehub_cached_courses_cx')
+      const yktRaw = localStorage.getItem('coursehub_cached_courses_ykt')
+      const cxList = cxRaw ? (JSON.parse(cxRaw) as CourseItem[]) : []
+      const yktList = yktRaw ? (JSON.parse(yktRaw) as CourseItem[]) : []
+      return [...cxList, ...yktList]
+    } catch {
+      return []
+    }
+  })
+  const [allActivities, setAllActivities] = useState<ClassroomActivityItem[]>([])
+  const [recentStudy, setRecentStudy] = useState<RecentStudyRecord | null>(() => {
+    try {
+      const raw = localStorage.getItem('coursehub_recent_study')
+      return raw ? (JSON.parse(raw) as RecentStudyRecord) : null
+    } catch {
+      return null
+    }
+  })
 
   const [observation, setObservation] = useState<PlaybackObservation | null>(null)
   const [geoRun, setGeoRun] = useState<GeoTestRun | null>(null)
@@ -110,6 +132,63 @@ export default function App(): JSX.Element {
       )
     })
   }, [api])
+
+  const loadAllCourses = useCallback(async () => {
+    try {
+      const [cxRes, yktRes] = await Promise.allSettled([
+        api.platform.courses('chaoxing'),
+        api.platform.courses('yuketang')
+      ])
+      const combined: CourseItem[] = []
+      if (cxRes.status === 'fulfilled' && cxRes.value.ok && cxRes.value.data.courses) {
+        const cxList = (cxRes.value.data.courses as CourseItem[]).map((c) => ({
+          ...c,
+          platformId: 'chaoxing' as const
+        }))
+        combined.push(...cxList)
+      }
+      if (yktRes.status === 'fulfilled' && yktRes.value.ok && yktRes.value.data.courses) {
+        const yktList = (yktRes.value.data.courses as CourseItem[]).map((c) => ({
+          ...c,
+          platformId: 'yuketang' as const
+        }))
+        combined.push(...yktList)
+      }
+      if (combined.length > 0) {
+        setAllCourses(combined)
+      }
+    } catch (e) {
+      console.warn('Failed to load courses for dashboard:', e)
+    }
+  }, [api])
+
+  const loadAllActivities = useCallback(async () => {
+    try {
+      const [cxRes, yktRes, tbRes] = await Promise.allSettled([
+        api.classroom.activities('chaoxing'),
+        api.classroom.activities('yuketang'),
+        api.classroom.activities('testbed')
+      ])
+      const combined: ClassroomActivityItem[] = []
+      if (cxRes.status === 'fulfilled' && cxRes.value.ok && cxRes.value.data.activities) {
+        combined.push(...cxRes.value.data.activities.map((a) => ({ ...a, platformId: 'chaoxing' as const })))
+      }
+      if (yktRes.status === 'fulfilled' && yktRes.value.ok && yktRes.value.data.activities) {
+        combined.push(...yktRes.value.data.activities.map((a) => ({ ...a, platformId: 'yuketang' as const })))
+      }
+      if (tbRes.status === 'fulfilled' && tbRes.value.ok && tbRes.value.data.activities) {
+        combined.push(...tbRes.value.data.activities.map((a) => ({ ...a, platformId: 'testbed' as const })))
+      }
+      setAllActivities(combined)
+    } catch (e) {
+      console.warn('Failed to load activities for dashboard:', e)
+    }
+  }, [api])
+
+  useEffect(() => {
+    void loadAllCourses()
+    void loadAllActivities()
+  }, [loadAllCourses, loadAllActivities])
 
   const pushActivity = useCallback((title: string) => {
     setActivity((prev) => [
@@ -439,6 +518,18 @@ export default function App(): JSX.Element {
       }
 
       setSelectedCourseName(course.name)
+      const initRecord: RecentStudyRecord = {
+        courseId: course.courseId,
+        classId: course.classId,
+        platformId: targetPlatformId,
+        courseName: course.name,
+        lastVisitedAt: new Date().toISOString()
+      }
+      setRecentStudy(initRecord)
+      try {
+        localStorage.setItem('coursehub_recent_study', JSON.stringify(initRecord))
+      } catch {}
+
       // 切换课程时复位 AI 助教上下文，不混用不同课程的题目或截图
       void api.ai.cancel()
       activeContextIdRef.current = null
@@ -507,6 +598,14 @@ export default function App(): JSX.Element {
         setTasks(chapterTasks)
         const first = chapterTasks[0]!
         setActiveTaskId(first.id)
+        const updatedRecord: RecentStudyRecord = {
+          ...initRecord,
+          chapterName: first.title
+        }
+        setRecentStudy(updatedRecord)
+        try {
+          localStorage.setItem('coursehub_recent_study', JSON.stringify(updatedRecord))
+        } catch {}
         setNotice(`已加载 ${chapterTasks.length} 个章节任务点，正在打开第 1 个任务`)
 
         if (first.sourceUrl) {
@@ -1259,14 +1358,28 @@ export default function App(): JSX.Element {
           />
         )
 
+      case 'dashboard':
       default:
         return (
           <DashboardScene
-            platformName={current?.name ?? '测试台'}
-            authLabel="未检测"
-            authState="unknown"
-            onOpenScene={(s) => setScene(s as SceneId)}
-            onOpenPlatform={() => void openPlatform(activeId)}
+            courses={allCourses}
+            activities={allActivities}
+            recentStudy={recentStudy}
+            onOpenCourse={(c) => void handleEnterCourseStudy(c)}
+            onOpenActivity={(act) => {
+              if (act.sourceUrl) {
+                const pid = (act.platformId as PlatformId) || activeId
+                setActiveId(pid)
+                setScene('browser')
+                void ensureOpen(pid).then(() => {
+                  void api.browser.navigate(pid, act.sourceUrl!)
+                })
+              } else {
+                setScene('signin')
+              }
+            }}
+            onNavigateTab={(tab) => setScene(tab as SceneId)}
+            onRefreshCourses={() => void loadAllCourses()}
           />
         )
     }
@@ -1295,38 +1408,42 @@ export default function App(): JSX.Element {
         drawerOpen={drawerOpen}
         onToggleDrawer={() => setDrawerOpen((v) => !v)}
         onOpenApiModal={() => setScene('settings')}
+        activeCourseName={scene === 'video' ? selectedCourseName : null}
+        onBackToCourses={() => setScene('courses')}
       />
 
       <div className="shell-body">
         <main className="main-card">
-          {/* 工具栏 */}
-          <div className="main-toolbar">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-              <span className={`chip ${current && current.auth === 'authenticated' ? 'chip-emerald' : 'chip-neutral'}`}>
-                <span className={`dot ${current?.auth === 'authenticated' ? 'on' : 'off'}`} />
-                {current?.auth === 'authenticated' ? '已登录' : '登录态未知'}
-              </span>
-              <span style={{ fontSize: 11.5, color: 'var(--ch-text-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {SCENES.find((s) => s.id === scene)?.label ?? '工作台'}
-              </span>
-            </div>
+          {/* 工具栏：仅在工作台、浏览器及诊断场景呈现；首页、课程中心与待办场景保持宽阔自然 */}
+          {scene !== 'dashboard' && scene !== 'courses' && scene !== 'signin' && scene !== 'settings' && (
+            <div className="main-toolbar">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                <span className={`chip ${current && current.auth === 'authenticated' ? 'chip-emerald' : 'chip-neutral'}`}>
+                  <span className={`dot ${current?.auth === 'authenticated' ? 'on' : 'off'}`} />
+                  {current?.auth === 'authenticated' ? '已登录' : '登录态未知'}
+                </span>
+                <span style={{ fontSize: 11.5, color: 'var(--ch-text-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {SCENES.find((s) => s.id === scene)?.label ?? '工作台'}
+                </span>
+              </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              {busy && (
-                <span className="chip chip-tint">
-                  <Loader2 size={11} className="spin" />
-                  {busy}
-                </span>
-              )}
-              {activeId !== 'testbed' && (
-                <span className="chip" title="真实平台能力未验证">
-                  <AlertTriangle size={11} />
-                  平台能力待验证
-                </span>
-              )}
-              <CapChip state="supported" compact reason="本地 fixture 可重复验证" />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {busy && (
+                  <span className="chip chip-tint">
+                    <Loader2 size={11} className="spin" />
+                    {busy}
+                  </span>
+                )}
+                {activeId !== 'testbed' && (
+                  <span className="chip" title="真实平台能力未验证">
+                    <AlertTriangle size={11} />
+                    平台能力待验证
+                  </span>
+                )}
+                <CapChip state="supported" compact reason="本地 fixture 可重复验证" />
+              </div>
             </div>
-          </div>
+          )}
 
           {/* 场景内容 */}
           <div

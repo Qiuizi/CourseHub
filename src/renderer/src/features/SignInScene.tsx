@@ -68,6 +68,7 @@ export function SignInScene({
   const [courseFilter, setCourseFilter] = useState<string>('')
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>('all')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [showClosedHistory, setShowClosedHistory] = useState(false)
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<number>(60) // 默认 60 秒
   const [countdown, setCountdown] = useState<number>(60)
 
@@ -446,7 +447,11 @@ export function SignInScene({
           </>
         ) : filteredActivities.length > 0 ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {filteredActivities.map((act) => {
+            {/* 正在进行或未开始的待办事项 */}
+            {(statusFilter === 'all'
+              ? filteredActivities.filter((a) => a.status !== 'closed')
+              : filteredActivities
+            ).map((act) => {
               const isOpen = act.status === 'open'
               const isClosed = act.status === 'closed'
               const isPending = act.status === 'pending'
@@ -459,15 +464,16 @@ export function SignInScene({
                 <div
                   key={act.id}
                   style={{
-                    padding: 16,
+                    padding: '14px 16px',
                     borderRadius: 'var(--r-block)',
-                    background: 'var(--ch-subtle)',
+                    background: 'var(--ch-surface)',
                     border: '1px solid var(--ch-border)',
                     display: 'flex',
                     justifyContent: 'space-between',
                     alignItems: 'center',
                     flexWrap: 'wrap',
-                    gap: 12
+                    gap: 12,
+                    boxShadow: 'var(--sh-2xs)'
                   }}
                   data-testid={`signin-item-${act.id}`}
                 >
@@ -587,6 +593,75 @@ export function SignInScene({
                 </div>
               )
             })}
+
+            {/* 默认折叠历史已结束活动 */}
+            {statusFilter === 'all' && filteredActivities.some((a) => a.status === 'closed') && (
+              <div style={{ marginTop: 10 }}>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => setShowClosedHistory((v) => !v)}
+                  style={{
+                    width: '100%',
+                    padding: '8px 16px',
+                    fontSize: 12,
+                    justifyContent: 'center',
+                    color: 'var(--ch-text-3)',
+                    background: 'var(--ch-surface-2)',
+                    borderRadius: 'var(--r-block)'
+                  }}
+                >
+                  <Clock size={13} />
+                  {showClosedHistory
+                    ? `收起已结束历史活动 (${filteredActivities.filter((a) => a.status === 'closed').length})`
+                    : `展开已结束历史活动 (${filteredActivities.filter((a) => a.status === 'closed').length})`}
+                </button>
+
+                {showClosedHistory && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10, opacity: 0.85 }}>
+                    {filteredActivities.filter((a) => a.status === 'closed').map((act) => (
+                      <div
+                        key={act.id}
+                        style={{
+                          padding: '12px 16px',
+                          borderRadius: 'var(--r-block)',
+                          background: 'var(--ch-subtle)',
+                          border: '1px solid var(--ch-border)',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          flexWrap: 'wrap',
+                          gap: 12
+                        }}
+                        data-testid={`signin-item-${act.id}`}
+                      >
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+                            <span className="chip chip-neutral" style={{ fontSize: 9.5 }}>
+                              {act.platformId === 'yuketang' ? '雨课堂' : act.platformId === 'chaoxing' ? '学习通' : '测试台'}
+                            </span>
+                            <span style={{ fontSize: 11, color: 'var(--ch-text-3)' }}>{act.courseName}</span>
+                            <span style={{ fontSize: 12, color: 'var(--ch-text-2)' }}>{act.title}</span>
+                            <span className="chip chip-neutral" style={{ fontSize: 9.5 }}>已结束</span>
+                          </div>
+                          <div style={{ fontSize: 10.5, color: 'var(--ch-text-3)' }}>
+                            截止时间: {fmtDateTime(act.endAt)}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn"
+                          style={{ fontSize: 11, padding: '3px 10px' }}
+                          onClick={() => onOpenPlatform(act.sourceUrl ?? undefined, act.platformId)}
+                        >
+                          <ExternalLink size={11} /> 查看往期
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         ) : (
           <Empty text="当前筛选条件下没有匹配的课堂活动。" />
@@ -602,16 +677,28 @@ export function SignInScene({
         )}
       </Card>
 
-      {/* 状态语义说明 */}
-      <Card title="状态与数据源契约">
-        <Rows
-          items={[
-            {
-              k: '未开始',
-              v: <span className="chip chip-warning">pending · 活动已发布但尚未到开放作答时间</span>
-            },
-            {
-              k: '进行中',
+      {/* 状态语义说明（折叠收纳，降低视觉干扰） */}
+      <details
+        style={{
+          borderRadius: 'var(--r-block)',
+          border: '1px solid var(--ch-border)',
+          background: 'var(--ch-surface)',
+          padding: '10px 16px',
+          fontSize: 12
+        }}
+      >
+        <summary style={{ cursor: 'pointer', color: 'var(--ch-text-3)', fontWeight: 500 }}>
+          查看状态与数据源契约说明
+        </summary>
+        <div style={{ marginTop: 10 }}>
+          <Rows
+            items={[
+              {
+                k: '未开始',
+                v: <span className="chip chip-warning">pending · 活动已发布但尚未到开放作答时间</span>
+              },
+              {
+                k: '进行中',
               v: <span className="chip chip-emerald">open · 正在进行，可进入页面参与或签到</span>
             },
             {
@@ -624,7 +711,8 @@ export function SignInScene({
             }
           ]}
         />
-      </Card>
+        </div>
+      </details>
 
       {/* 定位型签到指引 */}
       <Card title="定位型签到与模拟">
