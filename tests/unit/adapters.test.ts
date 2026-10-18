@@ -169,7 +169,9 @@ describe('ChaoxingAdapter 解析与请求构造', () => {
       teacherName: '张教授',
       clazzName: '2025春季班',
       courseUrl: 'https://mooc1.chaoxing.com/visit/stucoursemiddle?courseid=268029278&clazzid=157089353&cpi=123456&ismooc2=1',
-      coverUrl: 'https://p.ananas.chaoxing.com/star3/origin/cover.png'
+      coverUrl: 'https://p.ananas.chaoxing.com/star3/origin/cover.png',
+      isCurrentTerm: false,
+      termLabel: '往期/历史课程'
     })
     expect(res.courses[1]?.name).toBe('学术英语交流')
     expect(res.courses[1]?.courseId).toBe('265867291')
@@ -455,8 +457,12 @@ describe('YuketangAdapter 解析与请求构造', () => {
       classId: '601',
       courseId: '601',
       name: '分布式计算',
+      clazzName: undefined,
       courseUrl: 'https://www.yuketang.cn/v2/web/studentlog/601',
-      platformId: 'yuketang'
+      platformId: 'yuketang',
+      term: undefined,
+      isCurrentTerm: false,
+      termLabel: '往期课程'
     })
   })
 
@@ -780,6 +786,52 @@ describe('ChaoxingAdapter 与 YuketangAdapter 会话探测与业务接线', () =
     expect(chaps.ok).toBe(true)
     expect(chaps.chapters.length).toBeGreaterThan(0)
     expect(chaps.chapters[0]?.courseId).toBe('301')
+  })
+
+  it('parseMooc2CourseListResponse 遇到人机验证/验证码时返回 NEED_CAPTCHA 状态', () => {
+    const captchaHtml = `
+      <html>
+        <head><title>安全验证 - 超星学习通</title></head>
+        <body>
+          <div class="cx_captcha">请完成滑动验证码，人机安全验证</div>
+        </body>
+      </html>
+    `
+    const res = parseMooc2CourseListResponse(captchaHtml)
+    expect(res.ok).toBe(false)
+    expect(res.error).toContain('NEED_CAPTCHA')
+  })
+
+  it('parseYktCourseListResponse 正确解析雨课堂真实嵌套结构（data.list 与 teacher.name）', () => {
+    const realYktResponse = {
+      errcode: 0,
+      errmsg: 'Success',
+      data: {
+        list: [
+          {
+            classroom_id: 31894041,
+            name: '2026秋-30449902001',
+            teacher: { name: '张卫华', avatar: 'https://example.com/avatar.jpg' },
+            course_id: 9988,
+            cover: 'https://example.com/cover.png'
+          },
+          {
+            classroom_id: 31891979,
+            name: '2026秋-10468702001',
+            teacher: { name: '寇淑婷' }
+          }
+        ]
+      }
+    }
+    const res = parseYktCourseListResponse(realYktResponse)
+    expect(res.ok).toBe(true)
+    expect(res.courses).toHaveLength(2)
+    expect(res.courses[0].name).toBe('2026秋-30449902001')
+    expect(res.courses[0].teacherName).toBe('张卫华')
+    expect(res.courses[0].classId).toBe('31894041')
+    expect(res.courses[0].courseId).toBe('9988')
+    expect(res.courses[0].coverUrl).toBe('https://example.com/cover.png')
+    expect(res.courses[1].teacherName).toBe('寇淑婷')
   })
 })
 

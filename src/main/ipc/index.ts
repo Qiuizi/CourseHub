@@ -144,7 +144,7 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
       : id === 'testbed'
         ? testSession()
         : session.fromPartition(sessionNameFor(id))
-    const snapshot = await adapter.detectAuth(ses)
+    const snapshot = await adapter.detectAuth(ses, b?.currentUrl || undefined)
     return { platformId: id, ...snapshot, checkedAt: new Date().toISOString() }
   })
 
@@ -607,7 +607,15 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     if (!adapter?.listCourses) {
       return { state: 'unsupported', courses: [], error: '平台暂不支持课程列表读取' }
     }
-    return adapter.listCourses(ses)
+    const currentUrl = b?.currentUrl || undefined
+    const res = await adapter.listCourses(ses, currentUrl)
+    void deps.store.log('info', 'platform_courses_fetched', {
+      platformId: id,
+      state: res.state,
+      count: res.courses?.length ?? 0,
+      error: res.error ?? null
+    })
+    return res
   })
 
   handle('platform:chapters', async (_e, payload) => {

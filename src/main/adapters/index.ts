@@ -43,11 +43,11 @@ export interface PlatformAdapter {
   readonly id: PlatformId
   readonly version: string
   readonly capabilities: Record<string, CapabilityEntry>
-  detectAuth(ses?: SessionLike): Promise<{
+  detectAuth(ses?: SessionLike, currentUrl?: string): Promise<{
     state: 'unknown' | 'unauthenticated' | 'authenticated' | 'expired' | 'error'
     evidence: string | null
   }>
-  listCourses?(ses?: SessionLike): Promise<{
+  listCourses?(ses?: SessionLike, currentUrl?: string): Promise<{
     state: string
     courses: unknown[]
     error?: string
@@ -195,21 +195,21 @@ export class YuketangAdapter implements PlatformAdapter {
     videoHeartbeat: { state: 'unsupported', reason: '不伪造观看时长与心跳', verifiedAt: null }
   }
 
-  async detectAuth(ses?: SessionLike): Promise<{
+  async detectAuth(ses?: SessionLike, currentUrl?: string): Promise<{
     state: 'unknown' | 'unauthenticated' | 'authenticated' | 'expired' | 'error'
     evidence: string | null
   }> {
     if (!ses) return { state: 'unauthenticated', evidence: '缺少会话上下文' }
-    return detectYuketangAuth(ses)
+    return detectYuketangAuth(ses, currentUrl)
   }
 
-  async listCourses(ses?: SessionLike): Promise<{
+  async listCourses(ses?: SessionLike, currentUrl?: string): Promise<{
     state: string
     courses: unknown[]
     error?: string
   }> {
     if (!ses) return { state: 'unauthenticated', courses: [], error: '缺少会话上下文' }
-    return fetchYuketangCourses(ses)
+    return fetchYuketangCourses(ses, currentUrl)
   }
 
   async listChapters(

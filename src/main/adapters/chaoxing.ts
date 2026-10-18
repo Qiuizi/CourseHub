@@ -28,6 +28,8 @@ export interface ChaoxingCourse {
   clazzName?: string
   courseUrl?: string
   coverUrl?: string
+  isCurrentTerm?: boolean
+  termLabel?: string
 }
 
 export type ChaoxingActivityCategory =
@@ -176,38 +178,92 @@ export function parseCourseListResponse(raw: unknown): {
   }
 
   const rawRecord = raw as Record<string, unknown>
-  // 检查是否有明确的未登录或认证失效标识
-  if (rawRecord.result === 0 && typeof rawRecord.msg === 'string' && rawRecord.msg.includes('登录')) {
-    return { ok: false, courses: [], error: 'AUTH_EXPIRED: 学习通登录会话已过期' }
+  if (rawRecord.result === 0 && typeof rawRecord.msg === 'string') {
+    if (rawRecord.msg.includes('登录')) {
+      return { ok: false, courses: [], error: 'AUTH_EXPIRED: 学习通登录会话已过期' }
+    }
+    if (rawRecord.msg.includes('验证') || rawRecord.msg.includes('频繁')) {
+      return { ok: false, courses: [], error: 'NEED_CAPTCHA: 学习通接口提示安全验证' }
+    }
   }
 
   const found: ChaoxingCourse[] = []
   const seen = new Set<string>()
 
-  walk(raw, (node) => {
-    const courseId = str(node.courseId ?? node.courseid)
-    const classId = str(node.classId ?? node.clazzid ?? node.clazzId)
-    if (!courseId || !classId) return
+  // 1. 优先结构化解析官方 channelList (backclazzdata 真实返回格式)
+  if (Array.isArray(rawRecord.channelList)) {
+    for (const ch of rawRecord.channelList as Array<Record<string, unknown>>) {
+      if (!ch || typeof ch !== 'object') continue
+      const content = (ch.content && typeof ch.content === 'object' ? ch.content : {}) as Record<string, unknown>
+      const classId = str(content.id ?? ch.key ?? ch.id)
+      const cpi = str(content.cpi ?? ch.cpi) || '0'
+      const clazzName = str(content.name)
 
-    const key = `${courseId}:${classId}`
-    if (seen.has(key)) return
-    seen.add(key)
+      const courseObj = content.course as Record<string, unknown> | undefined
+      const dataArr = Array.isArray(courseObj?.data) ? (courseObj!.data as Array<Record<string, unknown>>) : []
+      for (const d of dataArr) {
+        if (!d || typeof d !== 'object') continue
+        const courseId = str(d.id ?? d.courseId)
+        if (!courseId || !classId) continue
 
-    const cpi = str(node.cpi) || '0'
-    const name = str(node.name ?? node.courseName ?? node.coursename) || `课程 ${courseId}`
-    const item: ChaoxingCourse = { courseId, classId, cpi, name }
+        const key = `${courseId}:${classId}`
+        if (seen.has(key)) continue
+        seen.add(key)
 
-    const teacherName = str(node.teacherfactor ?? node.teacherName)
-    if (teacherName) item.teacherName = teacherName
-    const clazzName = str(node.clazzName ?? node.className)
-    if (clazzName) item.clazzName = clazzName
-    const courseUrl = str(node.courseUrl ?? node.courseurl)
-    if (courseUrl) item.courseUrl = courseUrl
-    const coverUrl = str(node.imageurl ?? node.coverUrl)
-    if (coverUrl) item.coverUrl = coverUrl
+        const name = str(d.name) || `课程 ${courseId}`
+        const teacherName = str(d.teacherfactor ?? d.teacherName)
+        const coverUrl = str(d.imageurl ?? d.coverUrl)
+        const beginDate = str(content.beginDate)
+        const isCurrentTerm =
+          name.includes('26秋') ||
+          name.includes('2026') ||
+          beginDate.includes('2026') ||
+          beginDate.includes('2027')
+        const termLabel = isCurrentTerm ? '2026秋 (本学期)' : '往期/历史课程'
 
-    found.push(item)
-  })
+        found.push({
+          courseId,
+          classId,
+          cpi,
+          name,
+          teacherName,
+          clazzName,
+          courseUrl: `https://mooc1.chaoxing.com/visit/stucoursemiddle?courseid=${courseId}&clazzid=${classId}&cpi=${cpi}&ismooc2=1&v=2`,
+          coverUrl,
+          isCurrentTerm,
+          termLabel
+        })
+      }
+    }
+  }
+
+  // 2. 扁平化节点兜底（兼容测试桩与其它变体响应）
+  if (found.length === 0) {
+    walk(raw, (node) => {
+      const courseId = str(node.courseId ?? node.courseid ?? (node.id && node.name ? node.id : undefined))
+      const classId = str(node.classId ?? node.clazzid ?? node.clazzId)
+      if (!courseId || !classId) return
+
+      const key = `${courseId}:${classId}`
+      if (seen.has(key)) return
+      seen.add(key)
+
+      const cpi = str(node.cpi) || '0'
+      const name = str(node.name ?? node.courseName ?? node.coursename) || `课程 ${courseId}`
+      const item: ChaoxingCourse = { courseId, classId, cpi, name }
+
+      const teacherName = str(node.teacherfactor ?? node.teacherName)
+      if (teacherName) item.teacherName = teacherName
+      const clazzName = str(node.clazzName ?? node.className)
+      if (clazzName) item.clazzName = clazzName
+      const courseUrl = str(node.courseUrl ?? node.courseurl)
+      if (courseUrl) item.courseUrl = courseUrl
+      const coverUrl = str(node.imageurl ?? node.coverUrl)
+      if (coverUrl) item.coverUrl = coverUrl
+
+      found.push(item)
+    })
+  }
 
   return { ok: true, courses: found }
 }
@@ -230,6 +286,27 @@ export function parseMooc2CourseListResponse(html: unknown): {
     html.includes('未登录')
   ) {
     return { ok: false, courses: [], error: 'AUTH_EXPIRED: 学习通 MOOC2 会话已失效，需要重新登录' }
+  }
+  if (
+    html.includes('安全验证') ||
+    html.includes('验证码') ||
+    html.includes('人机验证') ||
+    html.includes('滑动验证') ||
+    html.includes('访问过于频繁') ||
+    html.includes('操作过于频繁') ||
+    html.includes('cx_captcha') ||
+    (html.includes('validate') && html.includes('captcha'))
+  ) {
+    return { ok: false, courses: [], error: 'NEED_CAPTCHA: 学习通触发安全验证，请在平台浏览器中完成验证码' }
+  }
+
+  if (
+    html.includes('null-data') ||
+    html.includes('No course yet') ||
+    html.includes('暂无课程') ||
+    html.includes('没有课程')
+  ) {
+    return { ok: true, courses: [] }
   }
 
   const found: ChaoxingCourse[] = []
@@ -277,12 +354,40 @@ export function parseMooc2CourseListResponse(html: unknown): {
     if (seen.has(key)) continue
     seen.add(key)
 
-    const teacherMatch = block.match(
-      /class=["'][^"']*color2[^"']*["'][^>]*title=["']([^"']+)["']/i
-    )
-    const clazzMatch = block.match(
-      /class=["'][^"']*color3[^"']*["'][^>]*title=["']([^"']+)["']/i
-    )
+    const c2 = block.match(/class=["'][^"']*color2[^"']*["'][^>]*title=["']([^"']+)["']/i)?.[1]?.trim()
+    const c3 = block.match(/class=["'][^"']*color3[^"']*["'][^>]*title=["']([^"']+)["']/i)?.[1]?.trim()
+
+    let teacherName: string | undefined
+    let clazzName: string | undefined
+
+    if (c2 && c3) {
+      if (c2.includes('大学') || c2.includes('学院') || c2.includes('学校') || c3.includes('老师') || c3.includes('教授')) {
+        clazzName = c2
+        teacherName = c3
+      } else if (c3.includes('班') || c3.includes('级') || c3.includes('期') || c2.includes('老师') || c2.includes('教授')) {
+        teacherName = c2
+        clazzName = c3
+      } else {
+        clazzName = c2
+        teacherName = c3
+      }
+    } else if (c2) {
+      teacherName = c2
+    } else if (c3) {
+      teacherName = c3
+    }
+
+    const timeMatch = block.match(/Opening time[：:]\s*([0-9-~～\s]+)/i)
+    const openingTime = timeMatch ? timeMatch[1].trim() : ''
+
+    const isCurrentTerm =
+      name.includes('26秋') ||
+      name.includes('2026') ||
+      openingTime.includes('2026') ||
+      openingTime.includes('2027') ||
+      openingTime.includes('2028')
+    const termLabel = isCurrentTerm ? '2026秋 (本学期)' : '往期/历史课程'
+
     const coverMatch = block.match(/<img[^>]+src=["']([^"']+)["']/i)
 
     found.push({
@@ -290,12 +395,14 @@ export function parseMooc2CourseListResponse(html: unknown): {
       classId,
       cpi,
       name,
-      teacherName: teacherMatch ? teacherMatch[1].trim() : undefined,
-      clazzName: clazzMatch ? clazzMatch[1].trim() : undefined,
+      teacherName,
+      clazzName,
       courseUrl:
         link ||
         `https://mooc1.chaoxing.com/visit/stucoursemiddle?courseid=${courseId}&clazzid=${classId}&cpi=${cpi}&ismooc2=1&v=2`,
-      coverUrl: coverMatch ? coverMatch[1] : undefined
+      coverUrl: coverMatch ? coverMatch[1] : undefined,
+      isCurrentTerm,
+      termLabel
     })
   }
 
@@ -760,7 +867,7 @@ export function parseActiveListResponse(
 
 export interface SessionLike {
   cookies: {
-    get: (filter: { domain?: string }) => Promise<Array<{ name: string; value: string }>>
+    get: (filter: { domain?: string }) => Promise<Array<{ name: string; value: string; domain?: string }>>
   }
   fetch: (input: any, init?: any) => Promise<any>
 }
@@ -804,6 +911,12 @@ export async function detectChaoxingAuth(ses: SessionLike): Promise<{
               evidence: `已成功认证（MOOC2），读取到 ${parsed2.courses.length} 门在读课程`
             }
           }
+          if (parsed2.error?.includes('NEED_CAPTCHA')) {
+            return {
+              state: 'authenticated',
+              evidence: `学习通触发安全验证码（Cookie 有效，需前往平台浏览器完成滑动验证${cachedCourses.length > 0 ? `，当前已缓存 ${cachedCourses.length} 门课程` : ''}）`
+            }
+          }
         }
       } catch {
         // MOOC2 探测异常，继续尝试 MOOC1
@@ -827,6 +940,12 @@ export async function detectChaoxingAuth(ses: SessionLike): Promise<{
       if (parsed.error?.includes('AUTH_EXPIRED')) {
         return { state: 'expired', evidence: '学习通登录会话已过期，需要重新登录' }
       }
+      if (parsed.error?.includes('NEED_CAPTCHA')) {
+        return {
+          state: 'authenticated',
+          evidence: `学习通触发安全验证码（Cookie 有效，需在内置浏览器中完成验证${cachedCourses.length > 0 ? `，当前已缓存 ${cachedCourses.length} 门课程` : ''}）`
+        }
+      }
     } catch {
       // 在线探测网络超时或限流，但由于本地 Cookie 依然有效，保持 authenticated 状态，不掉登录
     }
@@ -840,10 +959,10 @@ export async function detectChaoxingAuth(ses: SessionLike): Promise<{
   }
 }
 
-/** 通过 Session 拉取学习通课程列表（MOOC2 优先 + MOOC1 降级双轨容灾） */
+/** 通过 Session 拉取学习通课程列表（MOOC2 优先 + MOOC1 降级双轨容灾，遇到验证码保护缓存） */
 export async function fetchChaoxingCourses(ses: SessionLike): Promise<{
   ok: boolean
-  state: 'supported' | 'unauthenticated' | 'expired' | 'error'
+  state: 'supported' | 'unauthenticated' | 'expired' | 'error' | 'need_captcha'
   courses: ChaoxingCourse[]
   error?: string
 }> {
@@ -854,6 +973,7 @@ export async function fetchChaoxingCourses(ses: SessionLike): Promise<{
 
   // 1. 优先尝试现代 MOOC2 端点
   let mooc2Failed = false
+  let needCaptcha = false
   try {
     const req2 = buildMooc2CourseListRequest()
     const resp2 = await ses.fetch(req2.url, {
@@ -867,6 +987,23 @@ export async function fetchChaoxingCourses(ses: SessionLike): Promise<{
       if (parsed2.ok && parsed2.courses.length > 0) {
         cachedCourses = parsed2.courses
         return { ok: true, state: 'supported', courses: parsed2.courses }
+      }
+      if (parsed2.error?.includes('NEED_CAPTCHA')) {
+        needCaptcha = true
+        if (cachedCourses.length > 0) {
+          return {
+            ok: true,
+            state: 'need_captcha',
+            courses: cachedCourses,
+            error: '学习通触发安全验证，当前展示缓存课程。请在内置浏览器中完成验证码后刷新。'
+          }
+        }
+        return {
+          ok: false,
+          state: 'need_captcha',
+          courses: [],
+          error: '学习通触发安全验证，请在内置浏览器中完成滑动验证码。'
+        }
       }
       if (parsed2.error?.includes('AUTH_EXPIRED')) {
         cachedCourses = []
@@ -884,30 +1021,48 @@ export async function fetchChaoxingCourses(ses: SessionLike): Promise<{
     const resp1 = await ses.fetch(req1.url, { method: req1.method, headers: req1.headers })
     const json1 = (await resp1.json().catch(() => null)) as unknown
     const parsed1 = parseCourseListResponse(json1)
-    if (parsed1.ok && parsed1.courses.length > 0) {
-      cachedCourses = parsed1.courses
-      return { ok: true, state: 'supported', courses: parsed1.courses }
+    if (parsed1.ok) {
+      if (parsed1.courses.length > 0) {
+        cachedCourses = parsed1.courses
+        return { ok: true, state: 'supported', courses: parsed1.courses }
+      }
+      if (!needCaptcha && cachedCourses.length === 0) {
+        return { ok: true, state: 'supported', courses: [] }
+      }
+    }
+    if (parsed1.error?.includes('NEED_CAPTCHA')) {
+      needCaptcha = true
     }
     if (parsed1.error?.includes('AUTH_EXPIRED')) {
       cachedCourses = []
       return { ok: false, state: 'expired', courses: [], error: parsed1.error }
     }
     if (cachedCourses.length > 0) {
-      return { ok: true, state: 'supported', courses: cachedCourses }
+      return {
+        ok: true,
+        state: needCaptcha ? 'need_captcha' : 'supported',
+        courses: cachedCourses,
+        error: needCaptcha ? '学习通触发安全验证，当前展示缓存课程。请在平台浏览器中完成验证码。' : undefined
+      }
     }
     return {
       ok: false,
-      state: 'error',
+      state: needCaptcha ? 'need_captcha' : 'error',
       courses: [],
       error: parsed1.error ?? (mooc2Failed ? 'MOOC2 与 MOOC1 均未获取到课程数据' : '课程列表解析失败')
     }
   } catch (err) {
     if (cachedCourses.length > 0) {
-      return { ok: true, state: 'supported', courses: cachedCourses }
+      return {
+        ok: true,
+        state: needCaptcha ? 'need_captcha' : 'supported',
+        courses: cachedCourses,
+        error: needCaptcha ? '学习通触发安全验证，当前展示缓存课程。' : undefined
+      }
     }
     return {
       ok: false,
-      state: 'error',
+      state: needCaptcha ? 'need_captcha' : 'error',
       courses: [],
       error: `网络请求失败: ${err instanceof Error ? err.message : String(err)}`
     }
@@ -953,7 +1108,7 @@ export async function fetchChaoxingSignIns(ses: SessionLike): Promise<{
   const courseRes = await fetchChaoxingCourses(ses)
   if (!courseRes.ok) {
     return {
-      state: courseRes.state,
+      state: courseRes.state === 'need_captcha' ? 'error' : courseRes.state,
       events: [],
       fetchedAt: new Date().toISOString(),
       reason: courseRes.error ?? '无法拉取课程'
@@ -1024,7 +1179,7 @@ export async function fetchChaoxingActivities(ses: SessionLike): Promise<{
   const courseRes = await fetchChaoxingCourses(ses)
   if (!courseRes.ok) {
     return {
-      state: courseRes.state,
+      state: courseRes.state === 'need_captcha' ? 'error' : courseRes.state,
       activities: [],
       fetchedAt: new Date().toISOString(),
       reason: courseRes.error ?? '无法拉取课程'
