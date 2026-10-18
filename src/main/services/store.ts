@@ -10,6 +10,16 @@
 import { app, safeStorage } from 'electron'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
+import { Sanitizer } from '../../shared/sanitizer'
+import { createZipBuffer } from './zip'
+import type {
+  DiagnosticEvent,
+  DiagnosticManifest,
+  DiagnosticPackageData,
+  PlatformHealthReport
+} from '../../shared/feedback'
+import type { PlatformId } from '../../shared/types'
 
 export type JsonObject = Record<string, unknown>
 
@@ -120,40 +130,45 @@ export class Store {
 
   /* ------------------------------- 日志 ------------------------------- */
 
-  private static readonly SENSITIVE_KEYS = [
-    'apikey',
-    'api_key',
-    'authorization',
-    'cookie',
-    'token',
-    'password',
-    'secret'
-  ]
-
   redact(value: unknown): unknown {
-    if (value === null || typeof value !== 'object') return value
-    if (Array.isArray(value)) return value.map((v) => this.redact(v))
-    const out: JsonObject = {}
-    for (const [k, v] of Object.entries(value as JsonObject)) {
-      const lower = k.toLowerCase()
-      if (Store.SENSITIVE_KEYS.some((s) => lower.includes(s))) {
-        out[k] = '[REDACTED]'
-      } else if (typeof v === 'string' && v.length > 512) {
-        out[k] = `${v.slice(0, 512)}...[TRUNCATED]`
-      } else {
-        out[k] = this.redact(v)
-      }
-    }
-    return out
+    return Sanitizer.redact(value)
   }
 
   async log(level: 'info' | 'warn' | 'error', event: string, data: unknown = {}): Promise<void> {
-    const line = JSON.stringify({
-      ts: new Date().toISOString(),
+    await this.recordDiagnostic({
+      module: 'system',
       level,
-      event,
-      data: this.redact(data)
+      type: event,
+      code: event.toUpperCase(),
+      summary: event,
+      data: data as Record<string, unknown>
     })
+  }
+
+  async recordDiagnostic(
+    event: Omit<DiagnosticEvent, 'ts' | 'fingerprint'>
+  ): Promise<DiagnosticEvent> {
+    const ts = new Date().toISOString()
+    const fingerprint = Sanitizer.generateFingerprint({
+      platform: event.platform,
+      module: event.module,
+      code: event.code,
+      summary: event.summary
+    })
+    const fullEvent: DiagnosticEvent = {
+      ts,
+      module: event.module,
+      platform: event.platform,
+      level: event.level,
+      type: event.type,
+      code: event.code,
+      summary: Sanitizer.redactString(event.summary),
+      fingerprint,
+      data: event.data ? (Sanitizer.redact(event.data) as Record<string, unknown>) : undefined,
+      stack: event.stack ? Sanitizer.redactString(event.stack) : undefined
+    }
+
+    const line = JSON.stringify(fullEvent)
     const file = this.file('logs', 'app.jsonl')
     try {
       await fs.mkdir(path.dirname(file), { recursive: true })
@@ -161,6 +176,185 @@ export class Store {
       await this.trimLogs()
     } catch {
       /* 日志写失败不能打断主流程 */
+    }
+    return fullEvent
+  }
+
+  async getRecentDiagnostics(limit = 100): Promise<DiagnosticEvent[]> {
+    const file = this.file('logs', 'app.jsonl')
+    try {
+      const content = await fs.readFile(file, 'utf8')
+      const lines = content.trim().split('\n').filter(Boolean)
+      const events: DiagnosticEvent[] = []
+      for (let i = lines.length - 1; i >= 0 && events.length < limit; i--) {
+        try {
+          const parsed = JSON.parse(lines[i]) as Record<string, unknown>
+          if (parsed.event && !parsed.type) {
+            events.push({
+              ts: String(parsed.ts || new Date().toISOString()),
+              module: 'system',
+              level: (parsed.level as 'info' | 'warn' | 'error') || 'info',
+              type: String(parsed.event),
+              code: String(parsed.event).toUpperCase(),
+              summary: String(parsed.event),
+              fingerprint: Sanitizer.generateFingerprint({ code: String(parsed.event) }),
+              data: parsed.data as Record<string, unknown>
+            })
+          } else {
+            events.push(parsed as unknown as DiagnosticEvent)
+          }
+        } catch {
+          // ignore corrupted lines
+        }
+      }
+      return events
+    } catch {
+      return []
+    }
+  }
+
+  async buildDiagnosticPackage(
+    activePlatform: PlatformId = 'chaoxing',
+    healthReports?: Record<PlatformId, PlatformHealthReport>
+  ): Promise<DiagnosticPackageData> {
+    const recentErrors = await this.getRecentDiagnostics(100)
+    const now = new Date()
+
+    const manifest: DiagnosticManifest = {
+      app: {
+        name: 'CourseHub',
+        version: typeof app?.getVersion === 'function' ? app.getVersion() : '0.4.3-beta',
+        buildCommit: '2b351ad',
+        environment: app?.isPackaged ? 'production' : 'development'
+      },
+      system: {
+        platform: process.platform,
+        osRelease: os.release(),
+        arch: process.arch,
+        electronVersion: process.versions.electron || 'unknown',
+        chromeVersion: process.versions.chrome || 'unknown',
+        nodeVersion: process.versions.node || 'unknown'
+      },
+      runtime: {
+        generatedAt: now.toISOString(),
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai',
+        activePlatform,
+        platformsHealth: healthReports || ({} as Record<PlatformId, PlatformHealthReport>)
+      },
+      privacyNotice:
+        '本诊断数据已执行严格脱敏，绝不包含 Cookie、Token、API Key、密码、真实姓名、学生学号、个人用户名与答题私有内容。'
+    }
+
+    const distinctCodes = Array.from(new Set(recentErrors.map((e) => e.code))).slice(0, 5)
+    const summaryLines = [
+      `CourseHub 诊断摘要`,
+      `版本: v${manifest.app.version} (${manifest.app.buildCommit})`,
+      `操作系统: ${manifest.system.platform} ${manifest.system.osRelease} (${manifest.system.arch})`,
+      `生成时间: ${now.toLocaleString('zh-CN', { hour12: false })} (${manifest.runtime.timeZone})`,
+      `当前业务平台: ${activePlatform}`,
+      `最近异常事件: ${recentErrors.filter((e) => e.level === 'error').length} 项`,
+      ...(distinctCodes.length > 0 ? [`主要错误代码: ${distinctCodes.join(', ')}`] : []),
+      `隐私安全: 已自动脱敏个人凭据、路径与敏感身份信息`
+    ]
+    const summaryText = summaryLines.join('\n')
+
+    return {
+      manifest,
+      recentErrors,
+      summaryText
+    }
+  }
+
+  async exportDiagnosticZip(options: {
+    targetDir?: string
+    activePlatform?: PlatformId
+    feedbackNote?: string
+    screenshotBase64?: string
+    healthReports?: Record<PlatformId, PlatformHealthReport>
+  } = {}): Promise<{ path: string; bytes: number; filename: string }> {
+    const data = await this.buildDiagnosticPackage(
+      options.activePlatform || 'chaoxing',
+      options.healthReports
+    )
+
+    const now = new Date()
+    const pad = (n: number): string => String(n).padStart(2, '0')
+    const timeStr = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+    const filename = `CourseHub-Diagnostics-${timeStr}.zip`
+    const targetDir =
+      options.targetDir ||
+      (typeof app?.getPath === 'function' ? app.getPath('downloads') || app.getPath('temp') : os.tmpdir())
+    const targetFile = path.join(targetDir, filename)
+
+    const entries: { name: string; data: Buffer | string }[] = [
+      {
+        name: 'summary.json',
+        data: JSON.stringify(
+          {
+            summary: data.summaryText,
+            manifest: data.manifest,
+            note: options.feedbackNote ? Sanitizer.redactString(options.feedbackNote) : null
+          },
+          null,
+          2
+        )
+      },
+      {
+        name: 'errors.jsonl',
+        data: data.recentErrors.map((e) => JSON.stringify(e)).join('\n')
+      },
+      {
+        name: 'environment.json',
+        data: JSON.stringify(
+          {
+            app: data.manifest.app,
+            system: data.manifest.system,
+            runtime: data.manifest.runtime,
+            memory: {
+              totalMemMB: Math.round(os.totalmem() / 1024 / 1024),
+              freeMemMB: Math.round(os.freemem() / 1024 / 1024)
+            }
+          },
+          null,
+          2
+        )
+      },
+      {
+        name: 'README.txt',
+        data: [
+          '================================================================',
+          ' CourseHub 故障诊断与日志安全说明',
+          '================================================================',
+          '',
+          '本文件由 CourseHub 客户端自动脱敏生成，旨在协助开发者排查故障。',
+          '',
+          '隐私安全声明：',
+          '1. 已严格抹除 Cookies、Token、API Key、密码等认证凭据。',
+          '2. 已清除 Windows 个人用户名路径与 URL 敏感 Query 参数。',
+          '3. 不包含任何课程题目作答私有记录、聊天隐私或第三方历史记录。',
+          '',
+          `生成时间: ${now.toISOString()}`,
+          `客户端版本: ${data.manifest.app.version}`
+        ].join('\r\n')
+      }
+    ]
+
+    if (options.screenshotBase64) {
+      const cleanBase64 = options.screenshotBase64.replace(/^data:image\/\w+;base64,/, '')
+      entries.push({
+        name: 'screenshot.png',
+        data: Buffer.from(cleanBase64, 'base64')
+      })
+    }
+
+    const zipBuf = createZipBuffer(entries)
+    await fs.mkdir(path.dirname(targetFile), { recursive: true })
+    await fs.writeFile(targetFile, zipBuf)
+
+    return {
+      path: targetFile,
+      bytes: zipBuf.length,
+      filename
     }
   }
 

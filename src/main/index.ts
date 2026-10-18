@@ -32,14 +32,28 @@ if (!gotLock) {
 process.on('uncaughtException', (err) => {
   console.error('[CourseHub] Uncaught Exception:', err)
   try {
-    void store?.log('error', 'uncaught_exception', { error: String(err), stack: err.stack })
+    void store?.recordDiagnostic({
+      module: 'main',
+      level: 'error',
+      type: 'uncaught_exception',
+      code: 'UNCAUGHT_EXCEPTION',
+      summary: String(err?.message || err),
+      stack: err.stack
+    })
   } catch {}
 })
 
 process.on('unhandledRejection', (reason) => {
   console.error('[CourseHub] Unhandled Rejection:', reason)
   try {
-    void store?.log('error', 'unhandled_rejection', { reason: String(reason) })
+    void store?.recordDiagnostic({
+      module: 'main',
+      level: 'error',
+      type: 'unhandled_rejection',
+      code: 'UNHANDLED_REJECTION',
+      summary: String(reason instanceof Error ? reason.message : reason),
+      stack: reason instanceof Error ? reason.stack : undefined
+    })
   } catch {}
 })
 
@@ -81,12 +95,26 @@ function createWindow(): BrowserWindow {
   // 监控渲染崩溃与页面加载错误
   win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     console.error(`[CourseHub] did-fail-load: ${errorCode} (${errorDescription}) for ${validatedURL}`)
-    void store?.log('error', 'window_did_fail_load', { errorCode, errorDescription, validatedURL })
+    void store?.recordDiagnostic({
+      module: 'main',
+      level: 'error',
+      type: 'window_did_fail_load',
+      code: `FAIL_LOAD_${errorCode}`,
+      summary: `${errorDescription} (${errorCode})`,
+      data: { validatedURL }
+    })
   })
 
   win.webContents.on('render-process-gone', (_event, details) => {
     console.error(`[CourseHub] render-process-gone: ${details.reason} (exitCode: ${details.exitCode})`)
-    void store?.log('error', 'renderer_process_gone', details)
+    void store?.recordDiagnostic({
+      module: 'main',
+      level: 'error',
+      type: 'renderer_process_gone',
+      code: `RENDERER_GONE_${details.reason.toUpperCase()}`,
+      summary: `Renderer process gone: ${details.reason} (exitCode: ${details.exitCode})`,
+      data: details as unknown as Record<string, unknown>
+    })
   })
 
   // 本地 UI 不允许跳转到外部站点
