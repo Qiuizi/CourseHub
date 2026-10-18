@@ -171,6 +171,8 @@ export type ClassroomActivityCategory =
   | 'group'
   | 'other'
 
+export type DeadlineSource = 'teacher_explicit' | 'semester_default' | 'none'
+
 export interface ClassroomActivityItem {
   id: string
   platformId: PlatformId
@@ -188,6 +190,10 @@ export interface ClassroomActivityItem {
   locationText: string | null
   signInKind: SignInKind
   confidence: 'high' | 'medium' | 'low'
+  /** 截止时间来源定性：教师明确设定 / 学期默认边界（仅作参考） / 无截止时间 */
+  deadlineSource?: DeadlineSource
+  /** 截止时间附加说明（如：学期统一默认时间，仅供参考） */
+  deadlineNotice?: string | null
 }
 
 export interface Reminder {

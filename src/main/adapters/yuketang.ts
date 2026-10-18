@@ -645,6 +645,25 @@ export async function fetchYuketangActivities(ses: SessionLike): Promise<{
               const isDone = item.is_finished === true
               const status: 'open' | 'closed' | 'pending' = isDone ? 'closed' : isPast ? 'closed' : 'open'
 
+              let deadlineSource: import('@shared/types').DeadlineSource = 'none'
+              let deadlineNotice: string | null = null
+              if (deadline) {
+                const d = new Date(deadline)
+                const createTimeMs = item.create_time ? Number(item.create_time) : now
+                const isMonthEnd =
+                  (d.getUTCMonth() === 0 && d.getUTCDate() === 31) || // 01-31
+                  (d.getUTCMonth() === 6 && d.getUTCDate() === 31) || // 07-31
+                  (d.getUTCMonth() === 5 && d.getUTCDate() === 30)    // 06-30
+                const isLongTerm = deadline - createTimeMs > 60 * 24 * 3600 * 1000
+
+                if (isMonthEnd && isLongTerm) {
+                  deadlineSource = 'semester_default'
+                  deadlineNotice = '学期统一默认时间 (仅供参考，非教师单独设置)'
+                } else {
+                  deadlineSource = 'teacher_explicit'
+                }
+              }
+
               activities.push({
                 id: `ykt-hw-${item.id}`,
                 platformId: 'yuketang',
@@ -661,7 +680,9 @@ export async function fetchYuketangActivities(ses: SessionLike): Promise<{
                 locationRequired: false,
                 locationText: null,
                 signInKind: 'unknown',
-                confidence: 'high'
+                confidence: 'high',
+                deadlineSource,
+                deadlineNotice
               })
             }
           }

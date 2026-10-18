@@ -1227,7 +1227,8 @@ export async function fetchChaoxingActivities(ses: SessionLike): Promise<{
             locationRequired: signInKind === 'location',
             locationText: signInKind === 'location' ? '需现场定位' : null,
             signInKind,
-            confidence: 'high'
+            confidence: 'high',
+            deadlineSource: act.endAt ? 'teacher_explicit' : 'none'
           })
         }
       } catch {

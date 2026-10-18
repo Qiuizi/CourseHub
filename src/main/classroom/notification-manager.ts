@@ -1,18 +1,20 @@
 /**
  * 课堂活动通知与去重管理器。
  *
- * 核心契约与安全规则（开发规范 §4 & v0.4.1 验收要求）：
+ * 核心契约与安全规则（开发规范 §4 & v0.4.1 边界修正）：
  * 1. 首次同步不能向用户集中弹出历史通知：
  *    - 凡发布时间早于 24 小时前（或已结束）的历史进行中活动，首次同步执行静默基线记录（Silent Seed），不触发弹窗。
- * 2. 只有符合提醒条件的活动才触发 Windows 桌面通知：
- *    - 仅 status === 'open' 且（近期新发布 或 临近截止时间）的活动触发通知。
- * 3. 临近截止时间的提醒不会因新活动去重而被错误抑制：
+ * 2. 疑似系统默认学期边界只作参考展示：
+ *    - 若截止时间判定为学期统一默认边界（semester_default），只在 UI 参考展示，绝不自动发送临近/紧急截止通知。
+ * 3. 教师明确截止时间正常提醒：
+ *    - 仅 teacher_explicit 的真实截止时间参与临近与紧急截止提醒。
+ * 4. 临近截止时间提醒不会因新活动去重而被错误抑制：
  *    - 通知 Key 按触发阶段细分命名空间（:new, :deadline-24h, :deadline-2h），
- *      即使已通知过新发布，到达截止临界窗口依然精准提醒。
- * 4. 同一平台、课程、活动的相同阶段通知绝不重复。
- * 5. 不同平台的相同活动 ID 绝不发生冲突（包含 platformId 前缀命名空间）。
- * 6. 支持关闭重启后的持久化恢复（cache/notified-activities.json）。
- * 7. 支持测试环境隔离，避免向用户桌面大量发送测试通知。
+ *      发布通知后到达截止临界窗口依然精准提醒。
+ * 5. 同一活动在同一轮同步中最多触发一条截止提醒，优先选择更紧急的提醒等级（<=2h 优先于 <=24h）。
+ * 6. 任务已过期（endAt <= now）或已关闭（status !== 'open'）绝不补发提醒。
+ * 7. 不同课程、不同平台的相同活动 ID 绝不冲突（platformId + courseId 命名空间）。
+ * 8. 支持关闭重启后的持久化恢复（cache/notified-activities.json），同步重复执行幂等无弹窗。
  */
 
 import type { ClassroomActivityItem, PlatformId, ClassroomActivityCategory } from '@shared/types'
@@ -24,6 +26,7 @@ export interface NotificationPayload {
   key: string
   triggerType: NotificationTriggerType
   platformId: PlatformId
+  courseId: string
   activityId: string
   courseName: string
   title: string
@@ -119,27 +122,35 @@ export class ClassroomNotificationManager {
     let stateChanged = false
 
     for (const act of activities) {
-      // 1. 非 open 状态（如 closed 已结束、pending 待开放）一律不触发任何通知
+      // 1. 过滤：非 open 状态（如 closed 已结束、pending 待开放）一律不触发任何通知
       if (act.status !== 'open') {
         continue
       }
 
+      // 如果有截止时间且截止时间已过（<= 当前时间），属于已逾期/已结束任务，绝不触发任何通知
+      if (act.endAt && new Date(act.endAt).getTime() <= currentTime) {
+        continue
+      }
+
       const actId = act.id
-      const baseKey = `${platformId}:${actId}`
+      const courseId = act.courseId || 'general'
+      // 命名空间严格隔离：平台 + 课程 + 活动ID
+      const baseKey = `${platformId}:${courseId}:${actId}`
+      const legacyBaseKey = `${platformId}:${actId}`
       const newKey = `${baseKey}:new`
       const d24hKey = `${baseKey}:deadline-24h`
       const d2hKey = `${baseKey}:deadline-2h`
 
-      // 兼容历史单一 ID 存储格式（仅在 ID 携带平台前缀时兼容，避免无前缀 ID 跨平台串扰）
+      // 兼容历史单一 ID 存储格式（仅在带有专用前缀时兼容，避免跨平台或跨课程无前缀冲突）
       const isLegacyPrefixed =
         (platformId === 'chaoxing' && actId.startsWith('cx-')) ||
         (platformId === 'yuketang' && actId.startsWith('ykt-'))
       const alreadyHasNew =
         this.notifiedKeys.has(newKey) ||
         this.notifiedKeys.has(baseKey) ||
+        this.notifiedKeys.has(`${legacyBaseKey}:new`) ||
+        this.notifiedKeys.has(legacyBaseKey) ||
         (isLegacyPrefixed && this.notifiedKeys.has(actId))
-
-      let justNotifiedNew = false
 
       // 2. 检查「新活动发布」提醒逻辑
       if (!alreadyHasNew) {
@@ -160,7 +171,6 @@ export class ClassroomNotificationManager {
           this.notifiedKeys.add(baseKey)
           if (isLegacyPrefixed) this.notifiedKeys.add(actId)
           stateChanged = true
-          justNotifiedNew = true
 
           const notifTitle = `[${act.courseName || platformId}] ${act.title}`
           const notifBody =
@@ -174,6 +184,7 @@ export class ClassroomNotificationManager {
             key: newKey,
             triggerType: 'new_publish',
             platformId,
+            courseId,
             activityId: actId,
             courseName: act.courseName || '',
             title: act.title,
@@ -191,19 +202,17 @@ export class ClassroomNotificationManager {
         }
       }
 
-      // 3. 检查「临近截止时间」提醒逻辑（独立去重 Key，不受 new 已发送影响）
-      // 若当前 tick 刚刚触发过 new_publish，则本 tick 已提醒过新任务，不需要同秒再弹一次截止弹窗
-      if (act.endAt) {
+      // 3. 检查「临近截止时间」提醒逻辑
+      // 规则：
+      // - 若截止时间判定为学期统一默认边界（semester_default），只作参考展示，绝不发送截止通知！
+      // - 同一活动在同一轮同步中最多触发一条截止提醒，优先选择更紧急的提醒等级（<=2h 优先于 <=24h）
+      const isSemesterDefault = act.deadlineSource === 'semester_default'
+      if (act.endAt && !isSemesterDefault) {
         const remainingMs = new Date(act.endAt).getTime() - currentTime
         if (remainingMs > 0) {
           // 3.1 紧急临界（剩余 <= 2 小时）
           if (remainingMs <= 2 * 60 * 60 * 1000) {
-            if (justNotifiedNew) {
-              // 新发布且生命周期很短（如15分钟签到），new 提醒已覆盖，静默记录避免同秒双弹
-              this.notifiedKeys.add(d2hKey)
-              this.notifiedKeys.add(d24hKey)
-              stateChanged = true
-            } else if (!this.notifiedKeys.has(d2hKey)) {
+            if (!this.notifiedKeys.has(d2hKey)) {
               this.notifiedKeys.add(d2hKey)
               this.notifiedKeys.add(d24hKey) // 2h 触发同时抑制 24h 重复提醒
               stateChanged = true
@@ -215,6 +224,7 @@ export class ClassroomNotificationManager {
                 key: d2hKey,
                 triggerType: 'deadline_urgent',
                 platformId,
+                courseId,
                 activityId: actId,
                 courseName: act.courseName || '',
                 title: act.title,
@@ -231,13 +241,9 @@ export class ClassroomNotificationManager {
               }
             }
           }
-          // 3.2 临近截止（剩余 <= 24 小时）
+          // 3.2 临近截止（剩余 <= 24 小时，且 > 2 小时）
           else if (remainingMs <= 24 * 60 * 60 * 1000) {
-            if (justNotifiedNew) {
-              // 刚发布且截止在 24h 内，new 提醒已覆盖当前知会，记录 24h key，等进入 <= 2h 时再紧急提醒
-              this.notifiedKeys.add(d24hKey)
-              stateChanged = true
-            } else if (!this.notifiedKeys.has(d24hKey)) {
+            if (!this.notifiedKeys.has(d24hKey)) {
               this.notifiedKeys.add(d24hKey)
               stateChanged = true
 
@@ -248,6 +254,7 @@ export class ClassroomNotificationManager {
                 key: d24hKey,
                 triggerType: 'deadline_approaching',
                 platformId,
+                courseId,
                 activityId: actId,
                 courseName: act.courseName || '',
                 title: act.title,

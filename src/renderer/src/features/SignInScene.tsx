@@ -532,7 +532,14 @@ export function SignInScene({
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 11, color: 'var(--ch-text-3)', flexWrap: 'wrap' }}>
                       <span>开始: {fmtDateTime(act.startAt)}</span>
-                      <span>截止: {fmtDateTime(act.endAt)}</span>
+                      <span>
+                        截止: {fmtDateTime(act.endAt)}
+                        {act.deadlineSource === 'semester_default' && (
+                          <span style={{ marginLeft: 4, color: 'var(--ch-text-4)', fontSize: 10 }}>
+                            (学期默认参考)
+                          </span>
+                        )}
+                      </span>
                       {act.locationRequired && (
                         <span style={{ color: 'var(--ch-warning)' }}>
                           <MapPin size={11} style={{ display: 'inline', verticalAlign: -1 }} />{' '}
