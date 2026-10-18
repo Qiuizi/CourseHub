@@ -23,3 +23,7 @@ npm-debug.log*
 # 临时抓包与探针调试素材
 scratch-*.html
 scratch/
+
+# Agent 工作记忆与调试产物
+.workbuddy/
+*.zip
