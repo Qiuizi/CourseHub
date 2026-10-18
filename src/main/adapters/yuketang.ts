@@ -400,8 +400,13 @@ export async function fetchYuketangCourses(
 }> {
   const auth = await detectYuketangAuth(ses, currentBrowserUrl)
   if (auth.state !== 'authenticated') {
-    if (auth.state === 'unauthenticated' || auth.state === 'expired') {
-      cachedYktCourses = []
+    if (cachedYktCourses.length > 0) {
+      return {
+        ok: false,
+        state: auth.state,
+        courses: cachedYktCourses,
+        error: auth.evidence ?? '雨课堂登录已过期，当前展示历史缓存课程。请重新登录以同步最新内容。'
+      }
     }
     return { ok: false, state: auth.state, courses: [], error: auth.evidence ?? '未登录雨课堂' }
   }

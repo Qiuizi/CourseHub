@@ -17,6 +17,8 @@
  */
 
 import type { PlatformId, CapabilityState, SignInEvent, ChapterNode, ClassroomActivityItem } from '@shared/types'
+import type { PlatformHealthReport, PlatformHealthState } from '@shared/feedback'
+import { Sanitizer } from '@shared/sanitizer'
 import {
   detectChaoxingAuth,
   fetchChaoxingCourses,
@@ -43,6 +45,7 @@ export interface PlatformAdapter {
   readonly id: PlatformId
   readonly version: string
   readonly capabilities: Record<string, CapabilityEntry>
+  getHealthReport?(): PlatformHealthReport
   detectAuth(ses?: SessionLike, currentUrl?: string): Promise<{
     state: 'unknown' | 'unauthenticated' | 'authenticated' | 'expired' | 'error'
     evidence: string | null
@@ -84,12 +87,30 @@ const UNVERIFIED = (reason: string): CapabilityEntry => ({
   verifiedAt: null
 })
 
+export const HEALTH_LABELS: Record<PlatformHealthState, string> = {
+  healthy: '运行正常',
+  expired: '登录已过期',
+  need_captcha: '需安全验证码',
+  network_error: '网络连接异常',
+  rate_limited: '请求频次受限',
+  server_error: '平台服务异常',
+  parse_error: '数据解析异常',
+  suspected_api_change: '疑似接口改版'
+}
+
 /**
  * 学习通适配器：已连接 Electron Session、端点解析与数据模型。
  */
 export class ChaoxingAdapter implements PlatformAdapter {
   readonly id = 'chaoxing' as const
   readonly version = '0.3.7'
+
+  private healthState: PlatformHealthState = 'healthy'
+  private consecutiveParseFailures = 0
+  private lastSuccessAt: string | null = null
+  private lastCheckedAt: string = new Date().toISOString()
+  private errorFingerprint: string | null = null
+  private errorMessage: string | null = null
 
   readonly capabilities: Record<string, CapabilityEntry> = {
     auth: { state: 'supported', reason: '基于内置浏览器 Session Cookie 与接口探测', verifiedAt: '2026-10-15' },
@@ -102,12 +123,66 @@ export class ChaoxingAdapter implements PlatformAdapter {
     submitSignIn: { state: 'unsupported', reason: '第三方平台未授权写接口尚未实现，支持在内置浏览器中人工交互完成', verifiedAt: null }
   }
 
+  getHealthReport(): PlatformHealthReport {
+    return {
+      platformId: 'chaoxing',
+      state: this.healthState,
+      label: HEALTH_LABELS[this.healthState] || this.healthState,
+      lastCheckedAt: this.lastCheckedAt,
+      lastSuccessAt: this.lastSuccessAt,
+      errorFingerprint: this.errorFingerprint,
+      errorMessage: this.errorMessage,
+      consecutiveFailures: this.consecutiveParseFailures
+    }
+  }
+
+  recordSuccess(): void {
+    this.healthState = 'healthy'
+    this.consecutiveParseFailures = 0
+    this.lastSuccessAt = new Date().toISOString()
+    this.lastCheckedAt = this.lastSuccessAt
+    this.errorFingerprint = null
+    this.errorMessage = null
+  }
+
+  recordFailure(
+    kind: 'expired' | 'need_captcha' | 'network_error' | 'rate_limited' | 'server_error' | 'parse_error',
+    message: string,
+    code?: string
+  ): void {
+    this.lastCheckedAt = new Date().toISOString()
+    this.errorMessage = message
+    if (kind === 'parse_error') {
+      this.consecutiveParseFailures++
+      if (this.consecutiveParseFailures >= 2) {
+        this.healthState = 'suspected_api_change'
+      } else {
+        this.healthState = 'parse_error'
+      }
+    } else {
+      this.consecutiveParseFailures = 0
+      this.healthState = kind
+    }
+    this.errorFingerprint = Sanitizer.generateFingerprint({
+      platform: 'chaoxing',
+      module: 'courses',
+      code: code || kind.toUpperCase(),
+      summary: message
+    })
+  }
+
   async detectAuth(ses?: SessionLike): Promise<{
     state: 'unknown' | 'unauthenticated' | 'authenticated' | 'expired' | 'error'
     evidence: string | null
   }> {
     if (!ses) return { state: 'unauthenticated', evidence: '缺少会话上下文' }
-    return detectChaoxingAuth(ses)
+    const res = await detectChaoxingAuth(ses)
+    if (res.state === 'expired') {
+      this.recordFailure('expired', res.evidence || '学习通登录会话已失效')
+    } else if (res.state === 'authenticated' && this.healthState === 'expired') {
+      this.recordSuccess()
+    }
+    return res
   }
 
   async listCourses(ses?: SessionLike): Promise<{
@@ -116,7 +191,30 @@ export class ChaoxingAdapter implements PlatformAdapter {
     error?: string
   }> {
     if (!ses) return { state: 'unauthenticated', courses: [], error: '缺少会话上下文' }
-    return fetchChaoxingCourses(ses)
+    const res = await fetchChaoxingCourses(ses)
+    if (res.ok) {
+      if (res.state === 'need_captcha') {
+        this.recordFailure('need_captcha', res.error || '学习通提示滑动验证码')
+      } else {
+        this.recordSuccess()
+      }
+    } else {
+      if (res.state === 'expired') {
+        this.recordFailure('expired', res.error || '学习通登录已过期')
+      } else if (res.state === 'need_captcha') {
+        this.recordFailure('need_captcha', res.error || '学习通触发人机安全验证')
+      } else if (
+        res.error?.includes('网络') ||
+        res.error?.includes('timeout') ||
+        res.error?.includes('ETIMEDOUT') ||
+        res.error?.includes('ENOTFOUND')
+      ) {
+        this.recordFailure('network_error', res.error)
+      } else {
+        this.recordFailure('parse_error', res.error || '学习通课程列表解析失败')
+      }
+    }
+    return res
   }
 
   async listChapters(
@@ -131,7 +229,15 @@ export class ChaoxingAdapter implements PlatformAdapter {
     error?: string
   }> {
     if (!ses) return { ok: false, chapters: [], error: '缺少会话上下文' }
-    return fetchChaoxingChapters(ses, courseId, clazzId, cpi)
+    const res = await fetchChaoxingChapters(ses, courseId, clazzId, cpi)
+    if (!res.ok && res.error) {
+      if (res.error.includes('网络') || res.error.includes('ETIMEDOUT')) {
+        this.recordFailure('network_error', res.error)
+      } else {
+        this.recordFailure('parse_error', res.error)
+      }
+    }
+    return res
   }
 
   async listTodaySignIns(ses?: SessionLike): Promise<{
@@ -181,6 +287,13 @@ export class YuketangAdapter implements PlatformAdapter {
   readonly id = 'yuketang' as const
   readonly version = '0.4.0'
 
+  private healthState: PlatformHealthState = 'healthy'
+  private consecutiveParseFailures = 0
+  private lastSuccessAt: string | null = null
+  private lastCheckedAt: string = new Date().toISOString()
+  private errorFingerprint: string | null = null
+  private errorMessage: string | null = null
+
   readonly capabilities: Record<string, CapabilityEntry> = {
     auth: { state: 'supported', reason: '基于内置浏览器 Cookie 与在课探测', verifiedAt: '2026-10-15' },
     listCourses: { state: 'supported', reason: '雨课堂课程列表解析器已就绪', verifiedAt: '2026-10-15' },
@@ -195,12 +308,66 @@ export class YuketangAdapter implements PlatformAdapter {
     videoHeartbeat: { state: 'unsupported', reason: '不伪造观看时长与心跳', verifiedAt: null }
   }
 
+  getHealthReport(): PlatformHealthReport {
+    return {
+      platformId: 'yuketang',
+      state: this.healthState,
+      label: HEALTH_LABELS[this.healthState] || this.healthState,
+      lastCheckedAt: this.lastCheckedAt,
+      lastSuccessAt: this.lastSuccessAt,
+      errorFingerprint: this.errorFingerprint,
+      errorMessage: this.errorMessage,
+      consecutiveFailures: this.consecutiveParseFailures
+    }
+  }
+
+  recordSuccess(): void {
+    this.healthState = 'healthy'
+    this.consecutiveParseFailures = 0
+    this.lastSuccessAt = new Date().toISOString()
+    this.lastCheckedAt = this.lastSuccessAt
+    this.errorFingerprint = null
+    this.errorMessage = null
+  }
+
+  recordFailure(
+    kind: 'expired' | 'need_captcha' | 'network_error' | 'rate_limited' | 'server_error' | 'parse_error',
+    message: string,
+    code?: string
+  ): void {
+    this.lastCheckedAt = new Date().toISOString()
+    this.errorMessage = message
+    if (kind === 'parse_error') {
+      this.consecutiveParseFailures++
+      if (this.consecutiveParseFailures >= 2) {
+        this.healthState = 'suspected_api_change'
+      } else {
+        this.healthState = 'parse_error'
+      }
+    } else {
+      this.consecutiveParseFailures = 0
+      this.healthState = kind
+    }
+    this.errorFingerprint = Sanitizer.generateFingerprint({
+      platform: 'yuketang',
+      module: 'courses',
+      code: code || kind.toUpperCase(),
+      summary: message
+    })
+  }
+
   async detectAuth(ses?: SessionLike, currentUrl?: string): Promise<{
     state: 'unknown' | 'unauthenticated' | 'authenticated' | 'expired' | 'error'
     evidence: string | null
   }> {
     if (!ses) return { state: 'unauthenticated', evidence: '缺少会话上下文' }
-    return detectYuketangAuth(ses, currentUrl)
+    const res = await detectYuketangAuth(ses, currentUrl)
+    if (res.state === 'expired' || res.state === 'unauthenticated') {
+      this.recordFailure('expired', res.evidence || '雨课堂未登录或登录已失效')
+    } else if (res.state === 'authenticated' && this.healthState === 'expired') {
+      this.recordSuccess()
+    }
+    return res
   }
 
   async listCourses(ses?: SessionLike, currentUrl?: string): Promise<{
@@ -209,7 +376,23 @@ export class YuketangAdapter implements PlatformAdapter {
     error?: string
   }> {
     if (!ses) return { state: 'unauthenticated', courses: [], error: '缺少会话上下文' }
-    return fetchYuketangCourses(ses, currentUrl)
+    const res = await fetchYuketangCourses(ses, currentUrl)
+    if (res.ok) {
+      this.recordSuccess()
+    } else {
+      if (res.state === 'expired' || res.state === 'unauthenticated') {
+        this.recordFailure('expired', res.error || '雨课堂未登录或登录已过期')
+      } else if (res.error?.includes('429')) {
+        this.recordFailure('rate_limited', res.error)
+      } else if (res.error?.includes('500') || res.error?.includes('502') || res.error?.includes('503')) {
+        this.recordFailure('server_error', res.error)
+      } else if (res.error?.includes('网络') || res.error?.includes('timeout') || res.error?.includes('ETIMEDOUT')) {
+        this.recordFailure('network_error', res.error)
+      } else {
+        this.recordFailure('parse_error', res.error || '雨课堂课程解析失败')
+      }
+    }
+    return res
   }
 
   async listChapters(
@@ -222,7 +405,15 @@ export class YuketangAdapter implements PlatformAdapter {
     error?: string
   }> {
     if (!ses) return { ok: false, chapters: [], error: '缺少会话上下文' }
-    return fetchYuketangChapters(ses, courseId, clazzId)
+    const res = await fetchYuketangChapters(ses, courseId, clazzId)
+    if (!res.ok && res.error) {
+      if (res.error.includes('网络') || res.error.includes('ETIMEDOUT')) {
+        this.recordFailure('network_error', res.error)
+      } else {
+        this.recordFailure('parse_error', res.error)
+      }
+    }
+    return res
   }
 
   async listTodaySignIns(ses?: SessionLike): Promise<{
@@ -282,6 +473,19 @@ export class ZhihuishuAdapter implements PlatformAdapter {
     classroomQuestions: { state: 'unsupported', reason: '待真实证据', verifiedAt: null }
   }
 
+  getHealthReport(): PlatformHealthReport {
+    return {
+      platformId: 'zhihuishu',
+      state: 'healthy',
+      label: '待验证（仅入口）',
+      lastCheckedAt: new Date().toISOString(),
+      lastSuccessAt: null,
+      errorFingerprint: null,
+      errorMessage: null,
+      consecutiveFailures: 0
+    }
+  }
+
   async detectAuth(): Promise<{ state: 'unknown'; evidence: string | null }> {
     return { state: 'unknown', evidence: null }
   }
@@ -304,6 +508,18 @@ export const ADAPTERS: Record<PlatformId, PlatformAdapter> = {
       observePlayer: { state: 'supported', reason: '标准 HTML5 media 属性可观测', verifiedAt: '2026-10-15' },
       classroomQuestions: { state: 'supported', reason: 'data-ch-* 契约题目，可重复 E2E', verifiedAt: '2026-10-15' },
       geoOverride: { state: 'supported', reason: 'CDP Emulation.setGeolocationOverride', verifiedAt: '2026-10-15' }
+    },
+    getHealthReport(): PlatformHealthReport {
+      return {
+        platformId: 'testbed',
+        state: 'healthy',
+        label: '运行正常（本地测试台）',
+        lastCheckedAt: new Date().toISOString(),
+        lastSuccessAt: new Date().toISOString(),
+        errorFingerprint: null,
+        errorMessage: null,
+        consecutiveFailures: 0
+      }
     },
     async detectAuth() {
       return { state: 'authenticated' as const, evidence: 'local-fixture' }
@@ -433,4 +649,14 @@ export const ADAPTERS: Record<PlatformId, PlatformAdapter> = {
 
 export function getAdapter(id: PlatformId): PlatformAdapter | null {
   return ADAPTERS[id] ?? null
+}
+
+export function getAllPlatformHealth(): Record<PlatformId, PlatformHealthReport> {
+  const result = {} as Record<PlatformId, PlatformHealthReport>
+  for (const [id, adapter] of Object.entries(ADAPTERS)) {
+    if (adapter.getHealthReport) {
+      result[id as PlatformId] = adapter.getHealthReport()
+    }
+  }
+  return result
 }

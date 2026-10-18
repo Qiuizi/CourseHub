@@ -72,6 +72,7 @@ export class TestbedServer {
   private token = ''
   private activities: TestServerActivity[] = JSON.parse(JSON.stringify(INITIAL_ACTIVITIES))
   private records = new Map<string, TestServerSignInRecord>()
+  private feedbackList: Array<{ feedbackId: string; payload: unknown; receivedAt: string }> = []
   private requestCountLastSec = 0
   private lastSecTimestamp = Date.now()
 
@@ -131,7 +132,12 @@ export class TestbedServer {
 
   reset(): void {
     this.records.clear()
+    this.feedbackList = []
     this.activities = JSON.parse(JSON.stringify(INITIAL_ACTIVITIES))
+  }
+
+  getFeedbackList(): Array<{ feedbackId: string; payload: unknown; receivedAt: string }> {
+    return [...this.feedbackList]
   }
 
   private checkRateLimit(): boolean {
@@ -397,6 +403,48 @@ export class TestbedServer {
       this.reset()
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ ok: true, message: '服务端测试状态已重置' }))
+      return
+    }
+
+    // 8. POST /api/feedback (测试仿真反馈收集端点)
+    if (req.method === 'POST' && pathname === '/api/feedback') {
+      const parsed = await this.parseBody(req)
+      if (parsed.error === 'PAYLOAD_TOO_LARGE') {
+        res.writeHead(413, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: false, code: 'PAYLOAD_TOO_LARGE', message: '请求体超出 64KB 限制' }))
+        return
+      }
+      const payload = (parsed.body ?? {}) as { category?: string; description?: string }
+      if (!payload.category || !payload.description) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ success: false, message: '缺少类别或描述' }))
+        return
+      }
+      const feedbackId = `FB-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`
+      this.feedbackList.push({ feedbackId, payload, receivedAt: new Date().toISOString() })
+
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(
+        JSON.stringify({
+          success: true,
+          feedbackId,
+          message: '本地测试服务端已成功接收并记录反馈（仿真闭环）',
+          mockStored: true,
+          totalReceived: this.feedbackList.length
+        })
+      )
+      return
+    }
+
+    // 9. GET /api/feedback/list (测试查询接收记录)
+    if (req.method === 'GET' && pathname === '/api/feedback/list') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(
+        JSON.stringify({
+          ok: true,
+          feedbacks: this.feedbackList
+        })
+      )
       return
     }
 
