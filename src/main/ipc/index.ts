@@ -43,6 +43,7 @@ import {
   executeTestAction,
   suggestMapping
 } from '../classroom/question-extractor'
+import { ClassroomNotificationManager } from '../classroom/notification-manager'
 import { redactForOutbound } from '@shared/deepseek'
 import { buildTestPlan } from '@shared/question'
 import type { Store } from '../services/store'
@@ -104,11 +105,37 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     getWindow: deps.getWindow,
     getWebContents: (platformId) => deps.browsers.get(platformId)?.webContents ?? null
   })
-  const notifiedActivityIds = new Set<string>()
-  void deps.store.readJson<string[]>('cache/notified-activities.json', []).then((saved) => {
-    if (Array.isArray(saved)) {
-      for (const id of saved) {
-        if (typeof id === 'string') notifiedActivityIds.add(id)
+  const notificationManager = new ClassroomNotificationManager({
+    store: deps.store,
+    sender: (payload) => {
+      const win = deps.getWindow()
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('classroom:activity-notify', payload)
+      }
+      if (Notification.isSupported()) {
+        try {
+          const notification = new Notification({
+            title: payload.notifTitle,
+            body: payload.notifBody,
+            silent: false
+          })
+          notification.on('click', () => {
+            const targetWin = deps.getWindow()
+            if (targetWin) {
+              if (targetWin.isMinimized()) targetWin.restore()
+              targetWin.show()
+              targetWin.focus()
+              targetWin.webContents.send('classroom:notification-clicked', {
+                platformId: payload.platformId,
+                activityId: payload.activityId,
+                sourceUrl: payload.sourceUrl
+              })
+            }
+          })
+          notification.show()
+        } catch {
+          // 桌面通知在特定环境静默降级
+        }
       }
     }
   })
@@ -585,66 +612,13 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
 
     const res = await adapter.listActivities(ses)
     if (res.state === 'supported' && Array.isArray(res.activities)) {
-      const win = deps.getWindow()
-      let newlyNotified = false
-      for (const act of res.activities) {
-        if (act.status === 'open' && !notifiedActivityIds.has(act.id)) {
-          notifiedActivityIds.add(act.id)
-          newlyNotified = true
-
-          // 1. 发送渲染进程事件
-          if (win && !win.isDestroyed()) {
-            win.webContents.send('classroom:activity-notify', act)
-          }
-
-          // 2. 触发 Windows 原生桌面系统通知
-          if (Notification.isSupported()) {
-            try {
-              const notifTitle = `[${act.courseName || act.platformId}] ${act.title}`
-              const notifBody =
-                act.category === 'sign_in'
-                  ? '课堂签到正在进行，请在官方页面处理'
-                  : act.category === 'quiz'
-                    ? '有新发布的随堂作业/测验'
-                    : '发现新的课堂互动，点击前往查看'
-
-              const notification = new Notification({
-                title: notifTitle,
-                body: notifBody,
-                silent: false
-              })
-
-              notification.on('click', () => {
-                const targetWin = deps.getWindow()
-                if (targetWin) {
-                  if (targetWin.isMinimized()) targetWin.restore()
-                  targetWin.show()
-                  targetWin.focus()
-                  targetWin.webContents.send('classroom:notification-clicked', {
-                    platformId: act.platformId,
-                    activityId: act.id,
-                    sourceUrl: act.sourceUrl
-                  })
-                }
-              })
-
-              notification.show()
-            } catch {
-              // 桌面通知在特定环境静默降级
-            }
-          }
-        }
-      }
-
-      if (newlyNotified) {
-        void deps.store.writeJson('cache/notified-activities.json', Array.from(notifiedActivityIds))
-      }
+      await notificationManager.processActivities(id, res.activities)
     }
     return res
   })
 
   handle('classroom:notified-ids', async () => {
-    return Array.from(notifiedActivityIds)
+    return await notificationManager.getNotifiedKeys()
   })
 
   handle('classroom:test-notify', async (_e, payload) => {
@@ -667,8 +641,8 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
       signInKind: 'normal',
       confidence: 'high'
     }
-    notifiedActivityIds.add(testAct.id)
-    await deps.store.writeJson('cache/notified-activities.json', Array.from(notifiedActivityIds))
+    await notificationManager.recordKey(`testbed:${testAct.id}:new`)
+    await notificationManager.recordKey(testAct.id)
 
     const win = deps.getWindow()
     if (win && !win.isDestroyed()) {
@@ -696,7 +670,6 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
       })
       notif.show()
     }
-
     return { ok: true, activity: testAct }
   })
 
