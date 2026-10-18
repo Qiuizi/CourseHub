@@ -1,0 +1,17 @@
+name = "coursehub-feedback-worker"
+main = "src/index.ts"
+compatibility_date = "2024-04-01"
+
+# R2 存储桶绑定（用于安全存储脱敏诊断 ZIP 和截图，私有不可公开访问）
+[[r2_buckets]]
+binding = "FEEDBACK_STORAGE"
+bucket_name = "coursehub-diagnostics"
+
+[vars]
+ENVIRONMENT = "production"
+GITHUB_REPO_OWNER = "Qiuizi"
+GITHUB_REPO_NAME = "CourseHub"
+
+# 注意：服务端密钥不得明文写入此文件，请使用 Cloudflare CLI 注入：
+# wrangler secret put GITHUB_TOKEN
+# （需具备 Issues: Write 权限的 GitHub Fine-grained PAT）

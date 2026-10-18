@@ -1,0 +1,19 @@
+{
+  "name": "coursehub-feedback-worker",
+  "version": "0.1.0",
+  "description": "Cloudflare Worker for CourseHub user feedback and diagnostic package management",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@octokit/rest": "^20.0.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240405.0",
+    "typescript": "^5.4.5",
+    "wrangler": "^3.50.0"
+  },
+  "private": true
+}
