@@ -2,17 +2,12 @@ name = "coursehub-feedback-worker"
 main = "src/index.ts"
 compatibility_date = "2024-04-01"
 
-# ==================== 生产环境配置（默认） ====================
-[[r2_buckets]]
-binding = "FEEDBACK_STORAGE"
-bucket_name = "coursehub-diagnostics"
-
 [vars]
 ENVIRONMENT = "production"
 GITHUB_REPO_OWNER = "Qiuizi"
 GITHUB_REPO_NAME = "CourseHub"
 
-# ==================== Staging 独立测试环境 ====================
+# ==================== Staging 独立测试环境 (完全免费 D1 方案) ====================
 # 使用命令: npx wrangler deploy --env staging
 [env.staging]
 name = "coursehub-feedback-staging"
@@ -22,10 +17,10 @@ ENVIRONMENT = "staging"
 GITHUB_REPO_OWNER = "Qiuizi"
 GITHUB_REPO_NAME = "CourseHub-feedback-staging"
 
-[[env.staging.r2_buckets]]
-binding = "FEEDBACK_STORAGE"
-bucket_name = "coursehub-feedback-staging-private"
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "coursehub-feedback-staging-db"
+database_id = "dbd0ee7e-7644-45f5-a99f-4fb3b8d34117"
 
 # 注意：服务端密钥不得明文写入此文件，请使用 Cloudflare CLI 交互式安全注入：
 # npx wrangler secret put GITHUB_TOKEN --env staging
-# （需具备 Issues: Write 权限的 GitHub Fine-grained PAT）

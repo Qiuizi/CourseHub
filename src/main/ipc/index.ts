@@ -9,7 +9,6 @@ import { app, BrowserWindow, ipcMain, session, nativeImage, Notification } from 
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import os from 'node:os'
-import { createZipBuffer } from '../services/zip'
 import { pathToFileURL } from 'node:url'
 import type {
   AIResult,
@@ -1528,7 +1527,6 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
 
     if (remoteEndpoint) {
       try {
-        let diagnosticPackageBase64: string | undefined
         let diagnosticsSummary:
           | {
               totalErrors: number
@@ -1550,37 +1548,6 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
             activePlatform: pkgData.manifest.runtime.activePlatform,
             errorFingerprint: fp
           }
-
-          const inMemEntries: { name: string; data: Buffer | string }[] = [
-            {
-              name: 'summary.json',
-              data: JSON.stringify(
-                {
-                  summary: pkgData.summaryText,
-                  manifest: pkgData.manifest,
-                  note: `[分类] ${data.category}\n[描述] ${data.description}`
-                },
-                null,
-                2
-              )
-            },
-            {
-              name: 'errors.jsonl',
-              data: recentErrors.map((e) => JSON.stringify(e)).join('\n')
-            },
-            {
-              name: 'environment.json',
-              data: JSON.stringify(pkgData.manifest, null, 2)
-            }
-          ]
-
-          if (data.screenshotBase64) {
-            const clean = data.screenshotBase64.replace(/^data:image\/\w+;base64,/, '')
-            inMemEntries.push({ name: 'screenshot.png', data: Buffer.from(clean, 'base64') })
-          }
-
-          const inMemZip = createZipBuffer(inMemEntries)
-          diagnosticPackageBase64 = inMemZip.toString('base64')
         }
 
         const systemInfo = {
@@ -1596,16 +1563,19 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
           reproductionSteps: data.reproductionSteps,
           contact: data.contact,
           systemInfo,
-          diagnosticsSummary,
-          diagnosticPackageBase64,
-          screenshotBase64: data.screenshotBase64
+          diagnosticsSummary
         }
 
         const controller = new AbortController()
         const timer = setTimeout(() => controller.abort(), 6000)
         const resp = await fetch(remoteEndpoint, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(process.env.COURSEHUB_FEEDBACK_STAGING_KEY
+              ? { 'X-CourseHub-Staging-Key': process.env.COURSEHUB_FEEDBACK_STAGING_KEY }
+              : {})
+          },
           body: JSON.stringify(workerPayload),
           signal: controller.signal
         })

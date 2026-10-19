@@ -1,30 +1,125 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import worker, { Env } from '../../services/feedback-worker/src/index'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import worker, { Env, D1DatabaseLike, D1PreparedStatementLike } from '../../services/feedback-worker/src/index'
 
-describe('Cloudflare Worker 安全审计与防护测试 (worker-security)', () => {
-  let mockR2Storage: Map<string, { body: Uint8Array; metadata?: Record<string, unknown> }>
+describe('Cloudflare Worker + D1 免费方案安全与业务测试 (worker-security-d1)', () => {
+  let originalFetch: typeof globalThis.fetch
+  let mockFeedbackTable: Map<string, Record<string, unknown>>
+  let mockFingerprintsTable: Map<string, Record<string, unknown>>
+  let mockSyncJobsTable: Map<string, Record<string, unknown>>
+  let mockRateLimitsTable: Map<string, { count: number; reset_at: number }>
+  let mockD1: D1DatabaseLike
   let mockEnv: Env
 
   beforeEach(() => {
-    mockR2Storage = new Map()
+    originalFetch = globalThis.fetch
+    globalThis.fetch = vi.fn(async () => {
+      return new Response(JSON.stringify({ number: 99, html_url: 'https://github.com/mock/issue/99' }), { status: 200 })
+    })
+    mockFeedbackTable = new Map()
+    mockFingerprintsTable = new Map()
+    mockSyncJobsTable = new Map()
+    mockRateLimitsTable = new Map()
 
-    const mockBucket = {
-      async put(key: string, value: Uint8Array | string, options?: Record<string, unknown>) {
-        const buf = typeof value === 'string' ? new TextEncoder().encode(value) : value
-        mockR2Storage.set(key, { body: buf, metadata: options?.customMetadata as Record<string, unknown> })
-        return {}
-      },
-      async get(key: string) {
-        const item = mockR2Storage.get(key)
-        if (!item) return null
-        return {
-          async json() {
-            return JSON.parse(new TextDecoder().decode(item.body))
+    mockD1 = {
+      prepare(query: string): D1PreparedStatementLike {
+        let boundValues: unknown[] = []
+
+        const stmt: D1PreparedStatementLike = {
+          bind(...values: unknown[]) {
+            boundValues = values
+            return stmt
           },
-          async text() {
-            return new TextDecoder().decode(item.body)
+          async first<T = unknown>(_colName?: string): Promise<T | null> {
+            if (query.includes('FROM rate_limits WHERE key = ?')) {
+              const key = boundValues[0] as string
+              const row = mockRateLimitsTable.get(key)
+              return (row || null) as unknown as T
+            }
+            if (query.includes('FROM error_fingerprints WHERE fingerprint = ? AND category = ?')) {
+              const fp = boundValues[0] as string
+              const cat = boundValues[1] as string
+              const row = mockFingerprintsTable.get(`${fp}:${cat}`)
+              return (row || null) as unknown as T
+            }
+            return null
+          },
+          async run<T = unknown>() {
+            if (query.includes('INSERT OR REPLACE INTO rate_limits')) {
+              const key = boundValues[0] as string
+              const resetAt = boundValues[1] as number
+              mockRateLimitsTable.set(key, { count: 1, reset_at: resetAt })
+            } else if (query.includes('UPDATE rate_limits SET count = count + 1')) {
+              const key = boundValues[0] as string
+              const row = mockRateLimitsTable.get(key)
+              if (row) row.count += 1
+            } else if (query.includes('INSERT INTO feedback')) {
+              const id = boundValues[0] as string
+              mockFeedbackTable.set(id, {
+                id,
+                category: boundValues[1],
+                description: boundValues[2],
+                reproduction_steps: boundValues[3],
+                contact: boundValues[4],
+                app_version: boundValues[5],
+                os_info: boundValues[6],
+                error_fingerprint: boundValues[7],
+                diagnostics_summary: boundValues[8],
+                client_ip: boundValues[9],
+                created_at: boundValues[10],
+                created_timestamp: boundValues[11]
+              })
+            } else if (query.includes('INSERT OR REPLACE INTO error_fingerprints')) {
+              const fp = boundValues[0] as string
+              const cat = boundValues[1] as string
+              mockFingerprintsTable.set(`${fp}:${cat}`, {
+                fingerprint: fp,
+                category: cat,
+                issue_number: boundValues[2],
+                issue_url: boundValues[3],
+                report_count: 1,
+                first_seen_at: boundValues[4],
+                last_seen_at: boundValues[5]
+              })
+            } else if (query.includes('UPDATE error_fingerprints SET report_count = report_count + 1')) {
+              const lastSeen = boundValues[0] as string
+              const fp = boundValues[1] as string
+              const cat = boundValues[2] as string
+              const row = mockFingerprintsTable.get(`${fp}:${cat}`)
+              if (row) {
+                row.report_count = Number(row.report_count || 1) + 1
+                row.last_seen_at = lastSeen
+              }
+            } else if (query.includes('INSERT OR REPLACE INTO github_sync_jobs')) {
+              const fid = boundValues[0] as string
+              mockSyncJobsTable.set(fid, {
+                feedback_id: fid,
+                action: boundValues[1],
+                fingerprint: boundValues[2],
+                status: 'pending',
+                last_error: boundValues[3]
+              })
+            } else if (query.includes('UPDATE feedback SET status = ?')) {
+              const fid = boundValues[3] as string
+              const row = mockFeedbackTable.get(fid)
+              if (row) {
+                row.status = boundValues[0]
+                row.github_issue_number = boundValues[1]
+                row.github_issue_url = boundValues[2]
+              }
+            }
+            return { success: true, results: [] as T[] }
+          },
+          async all<T = unknown>() {
+            return { success: true, results: [] as T[] }
           }
         }
+        return stmt
+      },
+      async batch() {
+        return []
+      },
+      async exec() {
+        return {}
       }
     }
 
@@ -32,26 +127,31 @@ describe('Cloudflare Worker 安全审计与防护测试 (worker-security)', () =
       ENVIRONMENT: 'staging',
       GITHUB_REPO_OWNER: 'Qiuizi',
       GITHUB_REPO_NAME: 'CourseHub-feedback-staging',
-      GITHUB_TOKEN: 'mock_gh_token_12345',
-      FEEDBACK_STORAGE: mockBucket
+      GITHUB_TOKEN: 'mock_gh_pat_token',
+      DB: mockD1
     }
   })
 
-  it('1. 健康检查端点正常响应', async () => {
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  it('1. 健康检查端点正常响应并标识 D1 Free 存储', async () => {
     const req = new Request('https://worker.local/health')
     const res = await worker.fetch(req, mockEnv)
     expect(res.status).toBe(200)
-    const json = (await res.json()) as { status: string; service: string }
+    const json = (await res.json()) as { status: string; service: string; storage: string }
     expect(json.status).toBe('ok')
     expect(json.service).toBe('coursehub-feedback-worker')
+    expect(json.storage).toBe('cloudflare-d1-free')
   })
 
-  it('2. 拦截超出 5MB 的大请求体 (Content-Length 头部超限)', async () => {
+  it('2. 拦截超出 256KB 的请求体，杜绝大二进制直接灌入 D1', async () => {
     const req = new Request('https://worker.local/api/feedback', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'content-length': String(6 * 1024 * 1024)
+        'content-length': String(300 * 1024)
       },
       body: JSON.stringify({ category: 'login', description: 'test' })
     })
@@ -60,31 +160,14 @@ describe('Cloudflare Worker 安全审计与防护测试 (worker-security)', () =
     expect(res.status).toBe(413)
     const json = (await res.json()) as { success: boolean; message: string }
     expect(json.success).toBe(false)
-    expect(json.message).toContain('5MB')
+    expect(json.message).toContain('256KB')
   })
 
-  it('3. 拦截 Chunked 隐蔽传输的大请求体 (Body 长度超 5MB)', async () => {
-    const hugeDescription = 'A'.repeat(5.2 * 1024 * 1024)
-    const req = new Request('https://worker.local/api/feedback', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({ category: 'login', description: hugeDescription })
-    })
-
-    const res = await worker.fetch(req, mockEnv)
-    expect(res.status).toBe(413)
-    const json = (await res.json()) as { success: boolean; message: string }
-    expect(json.success).toBe(false)
-    expect(json.message).toContain('5MB')
-  })
-
-  it('4. 拦截缺少必填字段或描述过短的非法请求', async () => {
+  it('3. 拦截缺少必要字段或字数过少的请求', async () => {
     const req = new Request('https://worker.local/api/feedback', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ category: 'login', description: '短' })
+      body: JSON.stringify({ category: 'login', description: '坏' })
     })
 
     const res = await worker.fetch(req, mockEnv)
@@ -94,114 +177,46 @@ describe('Cloudflare Worker 安全审计与防护测试 (worker-security)', () =
     expect(json.message).toContain('不少于 5 字')
   })
 
-  it('5. 严格拦截伪造或损坏的诊断 ZIP 附件 (二进制 Magic Bytes 校验)', async () => {
-    // 伪造非 ZIP 数据 (例如纯文本 "THIS_IS_NOT_A_ZIP")
-    const fakeZipBase64 = Buffer.from('THIS_IS_NOT_A_ZIP_HEADER').toString('base64')
-
-    const req = new Request('https://worker.local/api/feedback', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'cf-connecting-ip': '192.168.1.50'
-      },
-      body: JSON.stringify({
-        category: 'sync',
-        description: '测试上传非法伪造压缩文件',
-        systemInfo: { appVersion: '0.4.3', os: 'Windows 11', timestamp: Date.now() },
-        diagnosticPackageBase64: fakeZipBase64
-      })
-    })
-
-    const res = await worker.fetch(req, mockEnv)
-    expect(res.status).toBe(400)
-    const json = (await res.json()) as { success: boolean; message: string }
-    expect(json.success).toBe(false)
-    expect(json.message).toContain('必须为标准 ZIP 文件')
-  })
-
-  it('6. 严格拦截伪造或损坏的截图附件 (图片 Magic Bytes 校验)', async () => {
-    // 伪造非 PNG/JPEG 图片 (例如 EXE 标识 "MZ...")
-    const fakeImageBase64 = Buffer.from('MZ_FAKE_EXECUTABLE_HEADER_BYTES').toString('base64')
-
-    const req = new Request('https://worker.local/api/feedback', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'cf-connecting-ip': '192.168.1.51'
-      },
-      body: JSON.stringify({
-        category: 'sync',
-        description: '测试上传非法伪造图片格式',
-        systemInfo: { appVersion: '0.4.3', os: 'Windows 11', timestamp: Date.now() },
-        screenshotBase64: fakeImageBase64
-      })
-    })
-
-    const res = await worker.fetch(req, mockEnv)
-    expect(res.status).toBe(400)
-    const json = (await res.json()) as { success: boolean; message: string }
-    expect(json.success).toBe(false)
-    expect(json.message).toContain('截图文件格式非法')
-  })
-
-  it('7. 未绑定 R2 存储桶时，若请求包含附件应返回 503 明确报错而非假装成功', async () => {
-    const envWithoutR2: Env = {
+  it('4. 未绑定 D1 数据库时返回 503 明确报错', async () => {
+    const envWithoutDB: Env = {
       ...mockEnv,
-      FEEDBACK_STORAGE: undefined
+      DB: undefined
     }
 
-    const validZipBytes = Buffer.from([0x50, 0x4b, 0x03, 0x04, ...new Array(20).fill(0)])
-    const validZipBase64 = validZipBytes.toString('base64')
-
     const req = new Request('https://worker.local/api/feedback', {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'cf-connecting-ip': '192.168.1.52'
-      },
-      body: JSON.stringify({
-        category: 'sync',
-        description: '附带诊断包但服务器未绑定 R2',
-        systemInfo: { appVersion: '0.4.3', os: 'Windows 11', timestamp: Date.now() },
-        diagnosticPackageBase64: validZipBase64
-      })
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ category: 'login', description: '测试无数据库报错场景' })
     })
 
-    const res = await worker.fetch(req, envWithoutR2)
+    const res = await worker.fetch(req, envWithoutDB)
     expect(res.status).toBe(503)
     const json = (await res.json()) as { success: boolean; message: string }
     expect(json.success).toBe(false)
-    expect(json.message).toContain('R2 Bucket 未绑定')
+    expect(json.message).toContain('数据库未绑定')
   })
 
-  it('8. 开启 STAGING_ACCESS_KEY 时拦截未授权的访问请求', async () => {
+  it('5. 开启 STAGING_ACCESS_KEY 时拦截未授权的访问请求', async () => {
     const envWithKey: Env = {
       ...mockEnv,
-      STAGING_ACCESS_KEY: 'test_staging_secret_key_999'
+      STAGING_ACCESS_KEY: 'staging_secret_key_123'
     }
 
     // 缺少头部
     const req1 = new Request('https://worker.local/api/feedback', {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'cf-connecting-ip': '192.168.1.53'
-      },
-      body: JSON.stringify({ category: 'login', description: '测试未授权的请求' })
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ category: 'login', description: '测试未授权访问' })
     })
-
     const res1 = await worker.fetch(req1, envWithKey)
     expect(res1.status).toBe(401)
-    const json1 = (await res1.json()) as { success: boolean }
-    expect(json1.success).toBe(false)
 
     // 携带合法头部
     const req2 = new Request('https://worker.local/api/feedback', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'cf-connecting-ip': '192.168.1.53',
-        'x-coursehub-staging-key': 'test_staging_secret_key_999'
+        'x-coursehub-staging-key': 'staging_secret_key_123'
       },
       body: JSON.stringify({
         category: 'login',
@@ -209,7 +224,6 @@ describe('Cloudflare Worker 安全审计与防护测试 (worker-security)', () =
         systemInfo: { appVersion: '0.4.3', os: 'Windows 11', timestamp: Date.now() }
       })
     })
-
     const res2 = await worker.fetch(req2, envWithKey)
     expect(res2.status).toBe(200)
     const json2 = (await res2.json()) as { success: boolean; feedbackId: string }
@@ -217,138 +231,196 @@ describe('Cloudflare Worker 安全审计与防护测试 (worker-security)', () =
     expect(json2.feedbackId).toMatch(/^FB-\d{8}-[A-Z0-9]{6}$/)
   })
 
-  it('9. 服务端对问题描述与复现步骤中的敏感凭证进行二次脱敏', async () => {
-    let postedIssueBody = ''
+  it('6. 服务端对问题描述与复现步骤中的凭据进行二次脱敏', async () => {
+    let capturedIssueBody = ''
 
-    // 模拟 fetch 拦截 GitHub API
-    const originalFetch = globalThis.fetch
     globalThis.fetch = vi.fn(async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
       const urlStr = url.toString()
-      if (urlStr.includes('api.github.com/repos') && init?.method === 'POST') {
+      if (urlStr.includes('/issues') && init?.method === 'POST') {
         const bodyObj = JSON.parse(init.body as string)
-        postedIssueBody = bodyObj.body
-        return new Response(JSON.stringify({ number: 105, html_url: 'https://github.com/mock/issue/105' }), {
+        capturedIssueBody = bodyObj.body
+        return new Response(JSON.stringify({ number: 101, html_url: 'https://github.com/mock/issue/101' }), {
           status: 201
         })
       }
       return new Response(JSON.stringify({}), { status: 200 })
     })
 
-    try {
-      const sensitiveDescription =
-        '用户在描述中手打了凭据: Bearer secret_raw_jwt_token_123, 密码 passwd=admin123456, 手机 13912345678'
-      const req = new Request('https://worker.local/api/feedback', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'cf-connecting-ip': '192.168.1.54'
-        },
-        body: JSON.stringify({
-          category: 'sync',
-          description: sensitiveDescription,
-          systemInfo: { appVersion: '0.4.3', os: 'Windows 11', timestamp: Date.now() }
-        })
+    const req = new Request('https://worker.local/api/feedback', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        category: 'sync',
+        description: '用户手打敏感信息: Bearer secret_token_xyz123, 密码 password=mysecret999, 手机 13800138000',
+        reproductionSteps: '访问 URL: https://mooc1.chaoxing.com/test?token=abc888',
+        systemInfo: { appVersion: '0.4.3', os: 'Windows 11', timestamp: Date.now() }
       })
+    })
 
-      const res = await worker.fetch(req, mockEnv)
-      expect(res.status).toBe(200)
+    const res = await worker.fetch(req, mockEnv)
+    expect(res.status).toBe(200)
 
-      // 验证 GitHub Issue 描述中敏感内容被二次遮盖
-      expect(postedIssueBody).not.toContain('secret_raw_jwt_token_123')
-      expect(postedIssueBody).not.toContain('admin123456')
-      expect(postedIssueBody).not.toContain('13912345678')
-      expect(postedIssueBody).toContain('[TOKEN_REDACTED]')
-      expect(postedIssueBody).toContain('[PHONE_REDACTED]')
-    } finally {
-      globalThis.fetch = originalFetch
-    }
+    // 验证 GitHub Issue 描述中敏感字段已被遮盖
+    expect(capturedIssueBody).not.toContain('secret_token_xyz123')
+    expect(capturedIssueBody).not.toContain('mysecret999')
+    expect(capturedIssueBody).not.toContain('13800138000')
+    expect(capturedIssueBody).not.toContain('abc888')
+    expect(capturedIssueBody).toContain('[TOKEN_REDACTED]')
+    expect(capturedIssueBody).toContain('[PHONE_REDACTED]')
+    expect(capturedIssueBody).toContain('token=[REDACTED_PARAM]')
+
+    // 验证 D1 feedback 表中存储的数据同样已经脱敏
+    const insertedFeedback = Array.from(mockFeedbackTable.values())[0]
+    expect(insertedFeedback.description).not.toContain('secret_token_xyz123')
+    expect(insertedFeedback.description).toContain('[TOKEN_REDACTED]')
   })
 
-  it('10. R2 持久化指纹缓存彻底避免连续提交导致重复创建 Issue', async () => {
-    let searchCallCount = 0
-    let createCallCount = 0
-    let commentCallCount = 0
+  it('7. D1 错误指纹表聚合：同类问题追加评论 (+1) 且不重复创建 Issue', async () => {
+    let createIssueCount = 0
+    let commentCount = 0
 
-    const originalFetch = globalThis.fetch
     globalThis.fetch = vi.fn(async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
       const urlStr = url.toString()
-      if (urlStr.includes('api.github.com/search/issues')) {
-        searchCallCount++
-        return new Response(JSON.stringify({ items: [] }), { status: 200 })
-      }
-      if (urlStr.includes('/issues/') && urlStr.includes('/comments') && init?.method === 'POST') {
-        commentCallCount++
-        return new Response(JSON.stringify({ id: 2001 }), { status: 201 })
-      }
-      if (urlStr.includes('/issues') && init?.method === 'POST') {
-        createCallCount++
+      if (urlStr.endsWith('/issues') && init?.method === 'POST') {
+        createIssueCount++
         return new Response(JSON.stringify({ number: 88, html_url: 'https://github.com/mock/issue/88' }), {
           status: 201
         })
       }
+      if (urlStr.includes('/issues/88/comments') && init?.method === 'POST') {
+        commentCount++
+        return new Response(JSON.stringify({ id: 999 }), { status: 201 })
+      }
       return new Response(JSON.stringify({}), { status: 200 })
     })
 
-    try {
-      const fingerprint = 'FP-ABCD-1234'
+    const fingerprint = 'FP-1234-ABCD'
 
-      // 第一次提交：R2 中无指纹，搜索 GitHub 无果，创建 Issue #88，并立即写入 R2 指纹缓存
-      const req1 = new Request('https://worker.local/api/feedback', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'cf-connecting-ip': '192.168.1.60'
-        },
-        body: JSON.stringify({
-          category: 'sync',
-          description: '用户 A 提交的接口解析失败故障',
-          systemInfo: { appVersion: '0.4.3', os: 'Windows 11', timestamp: Date.now() },
-          diagnosticsSummary: {
-            totalErrors: 1,
-            recentCodes: ['PARSE_ERROR'],
-            errorFingerprint: fingerprint
-          }
-        })
+    // 用户 A 首次上报：D1 无该指纹，调用 GitHub 创建 Issue #88，并写入 error_fingerprints 表
+    const reqA = new Request('https://worker.local/api/feedback', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        category: 'sync',
+        description: '用户 A 上报接口异常',
+        systemInfo: { appVersion: '0.4.3', os: 'Windows 11', timestamp: Date.now() },
+        diagnosticsSummary: {
+          totalErrors: 1,
+          recentCodes: ['PARSE_ERROR'],
+          errorFingerprint: fingerprint
+        }
       })
+    })
 
-      const res1 = await worker.fetch(req1, mockEnv)
-      expect(res1.status).toBe(200)
-      expect(createCallCount).toBe(1)
-      expect(commentCallCount).toBe(0)
+    const resA = await worker.fetch(reqA, mockEnv)
+    expect(resA.status).toBe(200)
+    expect(createIssueCount).toBe(1)
+    expect(commentCount).toBe(0)
 
-      // 验证 R2 中已写入指纹缓存
-      const cachedFp = mockR2Storage.get(`fingerprints/${fingerprint}.json`)
-      expect(cachedFp).toBeDefined()
+    // 验证 D1 中已记录该指纹
+    const cachedFp = mockFingerprintsTable.get(`${fingerprint}:sync`)
+    expect(cachedFp).toBeDefined()
+    expect(cachedFp?.issue_number).toBe(88)
 
-      // 第二位用户在 3 秒后提交相同指纹的问题（此时 GitHub Search 索引往往还未更新）：
-      // 此时 Worker 直接命中 R2 强一致指纹缓存，直接向 Issue #88 追加评论，绝不调用 Search 也绝不创建新 Issue！
-      const req2 = new Request('https://worker.local/api/feedback', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'cf-connecting-ip': '192.168.1.61'
-        },
-        body: JSON.stringify({
-          category: 'sync',
-          description: '用户 B 遇到同样的接口解析失败故障（不同描述）',
-          systemInfo: { appVersion: '0.4.3', os: 'Windows 11', timestamp: Date.now() },
-          diagnosticsSummary: {
-            totalErrors: 1,
-            recentCodes: ['PARSE_ERROR'],
-            errorFingerprint: fingerprint
-          }
-        })
+    // 用户 B 随后上报相同指纹问题：命中 D1 指纹表，直接向 Issue #88 发送 +1 评论，绝不创建新 Issue
+    const reqB = new Request('https://worker.local/api/feedback', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        category: 'sync',
+        description: '用户 B 同样遇到该解析异常',
+        systemInfo: { appVersion: '0.4.3', os: 'Windows 11', timestamp: Date.now() },
+        diagnosticsSummary: {
+          totalErrors: 1,
+          recentCodes: ['PARSE_ERROR'],
+          errorFingerprint: fingerprint
+        }
       })
+    })
 
-      const res2 = await worker.fetch(req2, mockEnv)
-      expect(res2.status).toBe(200)
-      // 验证：未创建第二个 Issue，而是追加评论
-      expect(createCallCount).toBe(1)
-      expect(commentCallCount).toBe(1)
-      // 验证：未消耗第二轮 GitHub Search API 请求（直接命中 R2 缓存）
-      expect(searchCallCount).toBe(1)
-    } finally {
-      globalThis.fetch = originalFetch
+    const resB = await worker.fetch(reqB, mockEnv)
+    expect(resB.status).toBe(200)
+    expect(createIssueCount).toBe(1) // 依然为 1，无重复建单
+    expect(commentCount).toBe(1) // 成功追加评论
+
+    // 验证指纹统计次数递增
+    expect(cachedFp?.report_count).toBe(2)
+  })
+
+  it('8. GitHub 同步失败时安全记录待重试任务至 github_sync_jobs，且不假装 Issue 已创建', async () => {
+    globalThis.fetch = vi.fn(async () => {
+      // 模拟 GitHub API 500 宕机或网络中断
+      return new Response(JSON.stringify({ message: 'GitHub Service Unavailable' }), { status: 503 })
+    })
+
+    const req = new Request('https://worker.local/api/feedback', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        category: 'activity',
+        description: '测试 GitHub 同步失败容灾机制',
+        systemInfo: { appVersion: '0.4.3', os: 'Windows 11', timestamp: Date.now() }
+      })
+    })
+
+    const res = await worker.fetch(req, mockEnv)
+    expect(res.status).toBe(200)
+    const json = (await res.json()) as {
+      success: boolean
+      feedbackId: string
+      issueUrl?: string
+      syncedToGitHub: boolean
     }
+    expect(json.success).toBe(true)
+    expect(json.syncedToGitHub).toBe(false)
+    expect(json.issueUrl).toBeUndefined() // 绝不伪造已同步
+
+    // 验证 github_sync_jobs 表记录了该待重试任务
+    const syncJob = mockSyncJobsTable.get(json.feedbackId)
+    expect(syncJob).toBeDefined()
+    expect(syncJob?.status).toBe('pending')
+    expect(syncJob?.action).toBe('create_issue')
+  })
+
+  it('9. D1 持久化 IP 频控有效拦截频发滥用请求 (429 Too Many Requests)', async () => {
+    const testIp = '198.51.100.22'
+
+    // 连续提交 5 次
+    for (let i = 0; i < 5; i++) {
+      const req = new Request('https://worker.local/api/feedback', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'cf-connecting-ip': testIp
+        },
+        body: JSON.stringify({
+          category: 'login',
+          description: `第 ${i + 1} 次频控测试提交`,
+          systemInfo: { appVersion: '0.4.3', os: 'Windows 11', timestamp: Date.now() }
+        })
+      })
+      const res = await worker.fetch(req, mockEnv)
+      expect(res.status).toBe(200)
+    }
+
+    // 第 6 次提交应被 D1 频控判定超限拦截
+    const reqExceed = new Request('https://worker.local/api/feedback', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'cf-connecting-ip': testIp
+      },
+      body: JSON.stringify({
+        category: 'login',
+        description: '超出 5 次频控限制的第 6 次提交',
+        systemInfo: { appVersion: '0.4.3', os: 'Windows 11', timestamp: Date.now() }
+      })
+    })
+
+    const resExceed = await worker.fetch(reqExceed, mockEnv)
+    expect(resExceed.status).toBe(429)
+    const json = (await resExceed.json()) as { success: boolean; message: string }
+    expect(json.success).toBe(false)
+    expect(json.message).toContain('提交太频繁')
   })
 })
