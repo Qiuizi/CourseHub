@@ -28,7 +28,6 @@ export interface UpdateDialogProps {
   onClose: () => void
   onStartDownload: () => void
   onInstallNow: () => void
-  onToggleInstallOnQuit: (val: boolean) => void
   onOpenReleasePage: () => void
   busyWarning?: string | null
 }
@@ -39,7 +38,6 @@ export function UpdateDialog({
   onClose,
   onStartDownload,
   onInstallNow,
-  onToggleInstallOnQuit,
   onOpenReleasePage,
   busyWarning
 }: UpdateDialogProps): ReactNode {
@@ -268,25 +266,11 @@ export function UpdateDialog({
               <strong>你的平台登录状态、Session Cookies 与 DeepSeek 加密配置将完整保留</strong>。
             </p>
 
-            <label
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                fontSize: 12,
-                color: 'var(--ch-text-2)',
-                cursor: 'pointer',
-                marginTop: 4
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={state.isInstallOnQuit}
-                onChange={(e) => onToggleInstallOnQuit(e.target.checked)}
-                style={{ cursor: 'pointer' }}
-              />
-              下次完全退出软件时自动安装（不立即重启）
-            </label>
+            {busyWarning && (
+              <Notice tone="warn">
+                {busyWarning}
+              </Notice>
+            )}
           </div>
         )}
 
@@ -351,13 +335,10 @@ export function UpdateDialog({
               <button
                 type="button"
                 className="btn btn-ghost"
-                onClick={() => {
-                  onToggleInstallOnQuit(true)
-                  onClose()
-                }}
-                data-testid="update-install-later"
+                onClick={onClose}
+                data-testid="update-close-downloaded"
               >
-                下次启动再安装
+                稍后重启
               </button>
               <button
                 type="button"

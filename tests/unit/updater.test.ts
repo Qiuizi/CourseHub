@@ -318,7 +318,48 @@ describe('原生自动更新系统全流程验收测试 (v0.4.3-beta.3)', () => 
       expect(allowRes.ok).toBe(true)
     })
 
-    it('setInstallOnQuit 能够正确配置下次退出时自动安装', () => {
+    it('downloadUpdate 异步 Promise 拒绝时，正确进入 error 状态并记录脱敏诊断，支持重试', async () => {
+      const mockUpdater = new MockAppUpdater()
+      mockUpdater.downloadUpdate = async () => {
+        throw new Error('connect ETIMEDOUT 140.82.112.4:443')
+      }
+
+      const manager = new AppUpdateManager({
+        store,
+        getWindow: () => null,
+        updaterInstance: mockUpdater as unknown as AppUpdater
+      })
+
+      // 模拟收到可用更新
+      mockUpdater.emit('update-available', {
+        version: '0.4.3-beta.4',
+        releaseDate: '2026-10-20T10:00:00Z',
+        releaseNotes: '公测更新',
+        releaseName: 'CourseHub v0.4.3 Beta 4'
+      })
+
+      expect(manager.getState().status).toBe('available')
+
+      // 启动下载，Promise 内部异步拒绝
+      const res = await manager.downloadUpdate()
+      expect(res.ok).toBe(true)
+
+      // 等待微任务与事件流转
+      await new Promise((r) => setTimeout(r, 60))
+
+      const state = manager.getState()
+      expect(state.status).toBe('error')
+      expect(state.error?.code).toBe('UPDATE_TIMEOUT')
+      expect(state.error?.message).toContain('连接 GitHub 超时')
+
+      // 在 error 状态下支持重试
+      mockUpdater.downloadUpdate = async () => []
+      const retryRes = await manager.downloadUpdate()
+      expect(retryRes.ok).toBe(true)
+      expect(manager.getState().status).toBe('downloading')
+    })
+
+    it('setInstallOnQuit 在 Beta 3 中强制禁用延后安装，锁定为仅允许立即重启安装', () => {
       const mockUpdater = new MockAppUpdater()
       const manager = new AppUpdateManager({
         store,
@@ -327,9 +368,12 @@ describe('原生自动更新系统全流程验收测试 (v0.4.3-beta.3)', () => 
       })
 
       const res = manager.setInstallOnQuit(true)
-      expect(res.ok).toBe(true)
-      expect(mockUpdater.autoInstallOnAppQuit).toBe(true)
-      expect(manager.getState().isInstallOnQuit).toBe(true)
+      expect(res.ok).toBe(false)
+      if (!res.ok) {
+        expect(res.error.code).toBe('INVALID_REQUEST')
+      }
+      expect(mockUpdater.autoInstallOnAppQuit).toBe(false)
+      expect(manager.getState().isInstallOnQuit).toBe(false)
     })
   })
 

@@ -1632,9 +1632,6 @@ export default function App(): JSX.Element {
             setNotice(res.error.message)
           }
         }}
-        onToggleInstallOnQuit={async (val) => {
-          await api.updater.setInstallOnQuit(val)
-        }}
         onOpenReleasePage={() => {
           void api.updater.openReleasePage()
         }}

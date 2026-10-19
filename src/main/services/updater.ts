@@ -355,7 +355,31 @@ export class AppUpdateManager {
     })
 
     try {
-      void this.autoUpdater.downloadUpdate()
+      const downloadPromise = this.autoUpdater.downloadUpdate()
+      if (downloadPromise && typeof (downloadPromise as Promise<unknown>).catch === 'function') {
+        ;(downloadPromise as Promise<unknown>).catch((err: unknown) => {
+          const classified = classifyUpdaterError(err)
+          this.state.status = 'error'
+          this.state.error = {
+            code: classified.code,
+            message: classified.message,
+            rawError: classified.rawError,
+            releasePageUrl: GITHUB_RELEASES_URL
+          }
+          this.notifyRenderer()
+          void this.deps.store.recordDiagnostic({
+            module: 'updater',
+            level: 'warn',
+            type: 'download_failed',
+            code: classified.code,
+            summary: `更新包异步下载失败: ${classified.message}`,
+            data: {
+              targetVersion: this.state.info?.version,
+              rawError: classified.rawError
+            }
+          })
+        })
+      }
       return ok({ started: true })
     } catch (err) {
       const classified = classifyUpdaterError(err)
@@ -367,6 +391,17 @@ export class AppUpdateManager {
         releasePageUrl: GITHUB_RELEASES_URL
       }
       this.notifyRenderer()
+      void this.deps.store.recordDiagnostic({
+        module: 'updater',
+        level: 'warn',
+        type: 'download_failed',
+        code: classified.code,
+        summary: `启动下载更新包失败: ${classified.message}`,
+        data: {
+          targetVersion: this.state.info?.version,
+          rawError: classified.rawError
+        }
+      })
       return fail('NETWORK_TIMEOUT', classified.message, true)
     }
   }
@@ -420,22 +455,25 @@ export class AppUpdateManager {
 
   /**
    * 配置是否在用户下次正常关闭应用时自动安装。
+   * Beta 3 专项安全策略：
+   * 退出时自动安装由于绕过 isBusy() 业务繁忙检查和 flushAllPlatformSessions() 会话持久化，
+   * 在 Beta 3 中强制关闭延后自动安装，确保所有更新必须经过安全门禁的“立即重启安装”。
    */
-  public setInstallOnQuit(installOnQuit: boolean): IpcResult<{ installOnQuit: boolean }> {
-    this.autoUpdater.autoInstallOnAppQuit = installOnQuit
-    this.state.isInstallOnQuit = installOnQuit
+  public setInstallOnQuit(_installOnQuit: boolean): IpcResult<{ installOnQuit: boolean }> {
+    this.autoUpdater.autoInstallOnAppQuit = false
+    this.state.isInstallOnQuit = false
     this.notifyRenderer()
 
     void this.deps.store.recordDiagnostic({
       module: 'updater',
-      level: 'info',
-      type: 'set_install_on_quit',
-      code: 'SET_INSTALL_ON_QUIT',
-      summary: `设置下次退出时安装: ${installOnQuit ? '开启' : '关闭'}`,
-      data: { installOnQuit }
+      level: 'warn',
+      type: 'set_install_on_quit_disabled',
+      code: 'SET_INSTALL_ON_QUIT_DISABLED',
+      summary: 'Beta 3 强制关闭退出时延后自动安装，仅保留受安全门禁保护的“立即重启安装”',
+      data: { requested: _installOnQuit }
     })
 
-    return ok({ installOnQuit })
+    return fail('INVALID_REQUEST', 'Beta 3 暂不支持退出时自动安装，请使用立即重启安装')
   }
 
   /**
