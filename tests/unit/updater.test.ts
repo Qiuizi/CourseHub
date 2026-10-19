@@ -30,6 +30,7 @@ class MockAppUpdater extends EventEmitter {
   autoDownload = true
   autoInstallOnAppQuit = true
   allowPrerelease = false
+  allowDowngrade = true
   channel: string | null = null
   logger: any = console
   feedUrlOptions: unknown = null
@@ -37,6 +38,10 @@ class MockAppUpdater extends EventEmitter {
   quitAndInstallCalled = false
   downloadUpdateCalled = false
   checkForUpdatesCalled = false
+
+  isUpdateSupported(_updateInfo: any): boolean {
+    return true
+  }
 
   setFeedURL(options: unknown): void {
     this.feedUrlOptions = options
@@ -138,6 +143,7 @@ describe('原生自动更新系统全流程验收测试 (v0.4.3-beta.3)', () => 
       expect(mockUpdater.autoInstallOnAppQuit).toBe(false)
       expect(mockUpdater.allowPrerelease).toBe(true)
       expect(mockUpdater.channel).toBe('beta')
+      expect(mockUpdater.allowDowngrade).toBe(false)
       expect(mockUpdater.feedUrlOptions).toEqual({
         provider: 'github',
         owner: 'Qiuizi',
@@ -145,10 +151,42 @@ describe('原生自动更新系统全流程验收测试 (v0.4.3-beta.3)', () => 
         releaseType: 'prerelease'
       })
 
+      // 验证 isUpdateSupported 只允许带 -beta 的版本
+      expect(mockUpdater.isUpdateSupported({ version: '0.4.3-beta.4' })).toBe(true)
+      expect(mockUpdater.isUpdateSupported({ version: '0.4.4' })).toBe(false)
+      expect(mockUpdater.isUpdateSupported({ version: '1.0.0' })).toBe(false)
+
       const state = manager.getState()
       expect(state.status).toBe('idle')
       expect(state.channel).toBe('beta')
       expect(state.currentVersion).toBe('0.4.3-beta.3')
+    })
+
+    it('检测到非公测版本（如正式版 0.4.4）时，严格拦截并转入 not_available，防止意外覆盖正式版', async () => {
+      const mockUpdater = new MockAppUpdater()
+      const manager = new AppUpdateManager({
+        store,
+        getWindow: () => null,
+        updaterInstance: mockUpdater as unknown as AppUpdater
+      })
+
+      mockUpdater.emit('update-available', {
+        version: '0.4.4', // 正式版无 -beta
+        releaseDate: '2026-10-25T10:00:00Z',
+        releaseNotes: '正式版发布',
+        releaseName: 'CourseHub v0.4.4 Stable'
+      })
+
+      const state = manager.getState()
+      expect(state.status).toBe('not_available')
+      expect(state.info).toBeNull()
+
+      // 等待诊断写盘
+      await new Promise((r) => setTimeout(r, 60))
+      const recent = await store.getRecentDiagnostics(10)
+      const rejectedDiag = recent.find((r) => r.code === 'UPDATE_CHANNEL_REJECTED')
+      expect(rejectedDiag).toBeDefined()
+      expect(rejectedDiag?.data).toEqual({ targetVersion: '0.4.4' })
     })
 
     it('完整更新全生命周期流转：checking -> available -> downloading -> downloaded', async () => {

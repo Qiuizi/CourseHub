@@ -65,8 +65,24 @@ export class AppUpdateManager {
       this.autoUpdater.autoInstallOnAppQuit = false
       this.autoUpdater.allowPrerelease = true
       this.autoUpdater.channel = 'beta'
+      // 关键安全修复：electron-updater 在设置 channel 时会隐式将 allowDowngrade 设为 true，
+      // 必须在其后立即显式重置为 false，防止意外降级或被串行版本劫持
+      this.autoUpdater.allowDowngrade = false
       // 日志交由 CourseHub 本地脱敏诊断系统统一管控，禁用默认控制台直接打出
       this.autoUpdater.logger = null
+
+      // 强门禁：覆盖 isUpdateSupported，确保 Beta 客户端绝对只接受公测版本（包含 -beta）
+      if (typeof this.autoUpdater.isUpdateSupported === 'function') {
+        const defaultIsUpdateSupported = this.autoUpdater.isUpdateSupported.bind(this.autoUpdater)
+        this.autoUpdater.isUpdateSupported = (updateInfo) => {
+          if (!defaultIsUpdateSupported(updateInfo)) return false
+          const targetVer = updateInfo?.version || ''
+          if (!targetVer.includes('-beta')) {
+            return false
+          }
+          return true
+        }
+      }
 
       // 显式锁定官方 GitHub 公开发布源，防止任何非官方配置劫持
       this.autoUpdater.setFeedURL({
@@ -108,6 +124,22 @@ export class AppUpdateManager {
     })
 
     this.autoUpdater.on('update-available', (info) => {
+      // 深度防御：严防目标版本非公测版（防止下载并安装正式版安装包覆盖 Beta 运行环境）
+      if (!info.version || !info.version.includes('-beta')) {
+        this.state.status = 'not_available'
+        this.state.lastCheckedAt = new Date().toISOString()
+        this.notifyRenderer()
+        void this.deps.store.recordDiagnostic({
+          module: 'updater',
+          level: 'warn',
+          type: 'update_channel_rejected',
+          code: 'UPDATE_CHANNEL_REJECTED',
+          summary: `检测到非公测版本 v${info?.version || 'unknown'}，Beta 渠道严格拦截以防止覆盖正式版`,
+          data: { targetVersion: info?.version }
+        })
+        return
+      }
+
       this.state.status = 'available'
       this.state.lastCheckedAt = new Date().toISOString()
       this.state.error = null
@@ -302,6 +334,10 @@ export class AppUpdateManager {
   public async downloadUpdate(): Promise<IpcResult<{ started: boolean }>> {
     if (this.state.status !== 'available' && this.state.status !== 'error') {
       return fail('INVALID_REQUEST', `当前状态为 ${this.state.status}，无需启动下载`)
+    }
+
+    if (!this.state.info?.version?.includes('-beta')) {
+      return fail('INVALID_REQUEST', '非公测版更新包，Beta 客户端拒绝下载')
     }
 
     this.state.status = 'downloading'
