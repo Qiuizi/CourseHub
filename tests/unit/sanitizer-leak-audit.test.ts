@@ -181,7 +181,8 @@ describe('独立安全审计与合成敏感数据泄露防护测试 (Section 一
     const entries = parseZipEntries(zipData)
     const summaryJson = JSON.parse(entries.find((e) => e.name === 'summary.json')!.data.toString('utf8'))
 
-    expect(summaryJson.summary).toBe(pkg.summaryText)
+    const normalizeSummary = (s: string): string => s.replace(/生成时间: .*\n/, '')
+    expect(normalizeSummary(summaryJson.summary)).toBe(normalizeSummary(pkg.summaryText))
     expect(summaryJson.manifest.app.version).toBe(pkg.manifest.app.version)
     expect(summaryJson.manifest.system.platform).toBe(pkg.manifest.system.platform)
     expect(summaryJson.manifest.runtime.activePlatform).toBe(pkg.manifest.runtime.activePlatform)
