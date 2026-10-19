@@ -1646,7 +1646,7 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     const now = new Date()
     const pad = (n: number): string => String(n).padStart(2, '0')
     const dateStr = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
-    const randStr = Math.random().toString(36).substring(2, 6).toUpperCase()
+    const randStr = Math.random().toString(36).substring(2, 8).toUpperCase()
     const feedbackId = `FB-${dateStr}-${randStr}`
 
     // 检查是否有配置线上反馈服务 (默认指向经审核的 Staging 免费实例，支持免配置直接联调)
@@ -1656,6 +1656,7 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     let submittedOnline = false
     let onlineMsg = ''
     let issueNum: number | undefined
+    let serverFeedbackId: string | undefined
 
     if (remoteEndpoint) {
       try {
@@ -1683,13 +1684,14 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
         }
 
         const systemInfo = {
-          appVersion: typeof app?.getVersion === 'function' ? app.getVersion() : '0.4.3-beta',
+          appVersion: typeof app?.getVersion === 'function' ? app.getVersion() : '0.4.3-beta.1',
           os: `${process.platform} ${os.release()}`,
           arch: process.arch,
           timestamp: now.getTime()
         }
 
         const workerPayload = {
+          clientFeedbackId: feedbackId,
           category: data.category,
           description: data.description,
           reproductionSteps: data.reproductionSteps,
@@ -1718,6 +1720,9 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
             submittedOnline = true
             onlineMsg = typeof resJson?.message === 'string' ? resJson.message : '反馈已成功提交至云端'
             issueNum = typeof resJson?.issueNumber === 'number' ? (resJson.issueNumber as number) : undefined
+            if (typeof resJson?.feedbackId === 'string' && resJson.feedbackId.trim()) {
+              serverFeedbackId = resJson.feedbackId.trim()
+            }
           }
         }
       } catch {
@@ -1726,11 +1731,12 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     }
 
     if (submittedOnline) {
+      const finalFeedbackId = serverFeedbackId || feedbackId
       return {
         success: true,
-        feedbackId,
+        feedbackId: finalFeedbackId,
         createdAt: now.toISOString(),
-        message: onlineMsg || `反馈已成功提交（编号：${feedbackId}），维护者将尽快排查！`,
+        message: onlineMsg || `反馈已成功提交（编号：${finalFeedbackId}），维护者将尽快排查！`,
         issueNumber: issueNum
       }
     }

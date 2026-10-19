@@ -34,6 +34,7 @@ export interface Env {
 }
 
 export interface FeedbackPayload {
+  clientFeedbackId?: string
   category: string
   reportType?: 'user_manual_feedback' | 'automated_compatibility_alert'
   description: string
@@ -402,13 +403,17 @@ export default {
       // 区分类型：自动预警 vs 用户手动反馈
       const isAutoAlert = payload.reportType === 'automated_compatibility_alert'
 
-      // 生成唯一反馈流水号：FB-YYYYMMDD-XXXXXX 或 ALERT-YYYYMMDD-XXXXXX
+      // 生成唯一反馈流水号：优先采用客户端合法规范的流水号，保证端云四方编号 100% 一致；若缺失或非法则由服务端兜底生成
       const now = new Date()
       const yyyy = now.getUTCFullYear()
       const mm = String(now.getUTCMonth() + 1).padStart(2, '0')
       const dd = String(now.getUTCDate()).padStart(2, '0')
       const rand = Math.random().toString(36).substring(2, 8).toUpperCase()
-      const feedbackId = `${isAutoAlert ? 'ALERT' : 'FB'}-${yyyy}${mm}${dd}-${rand}`
+      const defaultFeedbackId = `${isAutoAlert ? 'ALERT' : 'FB'}-${yyyy}${mm}${dd}-${rand}`
+      const clientCandidate = typeof payload.clientFeedbackId === 'string' ? payload.clientFeedbackId.trim() : ''
+      const feedbackId = /^(FB|ALERT)-\d{8}-[A-Z0-9]{4,10}$/.test(clientCandidate)
+        ? clientCandidate
+        : defaultFeedbackId
 
       // 服务端二次安全脱敏
       const safeDescription = sanitizeText(payload.description.trim())
