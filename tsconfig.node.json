@@ -3,6 +3,7 @@
     "src/main/**/*",
     "src/preload/**/*",
     "src/shared/**/*",
+    "services/feedback-worker/src/**/*",
     "tests/unit/**/*",
     "electron.vite.config.ts"
   ],
