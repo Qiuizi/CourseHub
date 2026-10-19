@@ -270,6 +270,7 @@ export class Store {
     activePlatform?: PlatformId
     feedbackNote?: string
     screenshotBase64?: string
+    includeErrors?: boolean
     healthReports?: Record<PlatformId, PlatformHealthReport>
   } = {}): Promise<{ path: string; bytes: number; filename: string }> {
     const data = await this.buildDiagnosticPackage(
@@ -286,6 +287,11 @@ export class Store {
       (typeof app?.getPath === 'function' ? app.getPath('downloads') || app.getPath('temp') : os.tmpdir())
     const targetFile = path.join(targetDir, filename)
 
+    const shouldIncludeErrors = options.includeErrors !== false
+    const errorsContent = shouldIncludeErrors
+      ? data.recentErrors.map((e) => JSON.stringify(e)).join('\n')
+      : JSON.stringify({ info: '用户未勾选附带系统诊断日志，已按隐私设定排除具体错误事件' })
+
     const entries: { name: string; data: Buffer | string }[] = [
       {
         name: 'summary.json',
@@ -301,7 +307,7 @@ export class Store {
       },
       {
         name: 'errors.jsonl',
-        data: data.recentErrors.map((e) => JSON.stringify(e)).join('\n')
+        data: errorsContent
       },
       {
         name: 'environment.json',
@@ -329,9 +335,10 @@ export class Store {
           '本文件由 CourseHub 客户端自动脱敏生成，旨在协助开发者排查故障。',
           '',
           '隐私安全声明：',
-          '1. 已严格抹除 Cookies、Token、API Key、密码等认证凭据。',
-          '2. 已清除 Windows 个人用户名路径与 URL 敏感 Query 参数。',
+          '1. 已通过规则过滤与黑名单拦截清除常见 Cookies、Token、API Key、密码等凭据。',
+          '2. 已清除 Windows 个人用户名路径与 URL 鉴权 Query 参数。',
           '3. 不包含任何课程题目作答私有记录、聊天隐私或第三方历史记录。',
+          '4. 本程序通过规则过滤最大化保护隐私，但不构成绝对“零泄露”数学证明。建议在提交前通过界面仔细核对脱敏预览。',
           '',
           `生成时间: ${now.toISOString()}`,
           `客户端版本: ${data.manifest.app.version}`

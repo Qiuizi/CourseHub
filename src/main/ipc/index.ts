@@ -8,6 +8,8 @@
 import { app, BrowserWindow, ipcMain, session, nativeImage, Notification } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs/promises'
+import os from 'node:os'
+import { createZipBuffer } from '../services/zip'
 import { pathToFileURL } from 'node:url'
 import type {
   AIResult,
@@ -1526,20 +1528,95 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
 
     if (remoteEndpoint) {
       try {
+        let diagnosticPackageBase64: string | undefined
+        let diagnosticsSummary:
+          | {
+              totalErrors: number
+              recentCodes: string[]
+              activePlatform?: string
+              errorFingerprint?: string
+            }
+          | undefined
+
+        if (data.attachDiagnostics) {
+          const pkgData = await deps.store.buildDiagnosticPackage('chaoxing', getAllPlatformHealth())
+          const recentErrors = pkgData.recentErrors
+          const recentCodes = Array.from(new Set(recentErrors.map((e) => e.code))).slice(0, 5)
+          const fp = recentErrors[0]?.fingerprint || undefined
+
+          diagnosticsSummary = {
+            totalErrors: recentErrors.length,
+            recentCodes,
+            activePlatform: pkgData.manifest.runtime.activePlatform,
+            errorFingerprint: fp
+          }
+
+          const inMemEntries: { name: string; data: Buffer | string }[] = [
+            {
+              name: 'summary.json',
+              data: JSON.stringify(
+                {
+                  summary: pkgData.summaryText,
+                  manifest: pkgData.manifest,
+                  note: `[分类] ${data.category}\n[描述] ${data.description}`
+                },
+                null,
+                2
+              )
+            },
+            {
+              name: 'errors.jsonl',
+              data: recentErrors.map((e) => JSON.stringify(e)).join('\n')
+            },
+            {
+              name: 'environment.json',
+              data: JSON.stringify(pkgData.manifest, null, 2)
+            }
+          ]
+
+          if (data.screenshotBase64) {
+            const clean = data.screenshotBase64.replace(/^data:image\/\w+;base64,/, '')
+            inMemEntries.push({ name: 'screenshot.png', data: Buffer.from(clean, 'base64') })
+          }
+
+          const inMemZip = createZipBuffer(inMemEntries)
+          diagnosticPackageBase64 = inMemZip.toString('base64')
+        }
+
+        const systemInfo = {
+          appVersion: typeof app?.getVersion === 'function' ? app.getVersion() : '0.4.3-beta',
+          os: `${process.platform} ${os.release()}`,
+          arch: process.arch,
+          timestamp: now.getTime()
+        }
+
+        const workerPayload = {
+          category: data.category,
+          description: data.description,
+          reproductionSteps: data.reproductionSteps,
+          contact: data.contact,
+          systemInfo,
+          diagnosticsSummary,
+          diagnosticPackageBase64,
+          screenshotBase64: data.screenshotBase64
+        }
+
         const controller = new AbortController()
         const timer = setTimeout(() => controller.abort(), 6000)
         const resp = await fetch(remoteEndpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...data, feedbackId }),
+          body: JSON.stringify(workerPayload),
           signal: controller.signal
         })
         clearTimeout(timer)
         if (resp.ok) {
           const resJson = (await resp.json().catch(() => null)) as Record<string, unknown>
-          submittedOnline = true
-          onlineMsg = typeof resJson?.message === 'string' ? resJson.message : '反馈已成功提交至云端'
-          issueNum = typeof resJson?.issueNumber === 'number' ? resJson.issueNumber : undefined
+          if (resJson?.success) {
+            submittedOnline = true
+            onlineMsg = typeof resJson?.message === 'string' ? resJson.message : '反馈已成功提交至云端'
+            issueNum = typeof resJson?.issueNumber === 'number' ? (resJson.issueNumber as number) : undefined
+          }
         }
       } catch {
         submittedOnline = false
@@ -1556,7 +1633,7 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
       }
     }
 
-    // 离线兜底：自动在本地生成脱敏诊断 ZIP 包，保留所有输入
+    // 离线兜底：自动在本地生成脱敏诊断 ZIP 包，严格根据用户选择是否附带错误日志
     const zipExport = await deps.store.exportDiagnosticZip({
       feedbackNote: [
         `[反馈分类] ${data.category}`,
@@ -1567,6 +1644,7 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
         .filter(Boolean)
         .join('\n'),
       screenshotBase64: data.screenshotBase64,
+      includeErrors: data.attachDiagnostics === true,
       healthReports: getAllPlatformHealth()
     })
 

@@ -1,12 +1,13 @@
 /**
  * CourseHub Feedback & Diagnostic Collector Cloudflare Worker
  *
- * 功能：
- * 1. 接收客户端脱敏反馈与诊断数据
- * 2. 验证输入合法性与 IP 速率限制
- * 3. 将诊断 ZIP 与截图保存至私有 R2 存储桶（不向公众暴露）
- * 4. 自动检索同类错误指纹，去重聚合至 GitHub Issues
- * 5. 全程保证零密钥外泄（Client 不包含任何 Token；Serverless 端仅使用环境变量配置的最小权限 PAT）
+ * 安全强化规范（v0.4.3 RC 审计）：
+ * 1. 严格限制请求体大小（总包 <= 5MB，ZIP <= 3MB，截图 <= 2MB）。
+ * 2. 真实文件 Magic Bytes 校验（ZIP 必须为 PK\x03\x04，图片必须为 PNG/JPEG/WebP）。
+ * 3. IP 速率限制（10 分钟最多 5 次）与 60s 相同内容防重放。
+ * 4. 诊断包与截图仅存入私有 R2（禁止公开 Read 权限）。
+ * 5. GitHub Token 仅存储在 Worker 环境变量中，GitHub API 异常降级防雪崩。
+ * 6. 错误指纹跨分类防碰撞校验（分类 + 指纹双重锁定）。
  */
 
 export interface Env {
@@ -38,10 +39,11 @@ interface FeedbackPayload {
   screenshotBase64?: string
 }
 
-// 简单内存 IP 频控（防刷）
+// 内存 IP 频控与防重放
 const ipRateMap = new Map<string, { count: number; resetAt: number }>()
+const recentSubmissionMap = new Map<string, number>()
 
-function isRateLimited(ip: string, limit = 10, windowMs = 5 * 60 * 1000): boolean {
+function isRateLimited(ip: string, limit = 5, windowMs = 10 * 60 * 1000): boolean {
   const now = Date.now()
   const entry = ipRateMap.get(ip)
   if (!entry || now > entry.resetAt) {
@@ -55,11 +57,56 @@ function isRateLimited(ip: string, limit = 10, windowMs = 5 * 60 * 1000): boolea
   return false
 }
 
+function isDuplicateSubmission(key: string, cooldownMs = 60 * 1000): boolean {
+  const now = Date.now()
+  const last = recentSubmissionMap.get(key)
+  if (last && now - last < cooldownMs) {
+    return true
+  }
+  recentSubmissionMap.set(key, now)
+  // 定期淘汰过期 key
+  if (recentSubmissionMap.size > 200) {
+    for (const [k, t] of recentSubmissionMap.entries()) {
+      if (now - t > cooldownMs) recentSubmissionMap.delete(k)
+    }
+  }
+  return false
+}
+
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
   'Access-Control-Max-Age': '86400'
+}
+
+/** 校验 ZIP 首部 4 字节魔数: 0x50 0x4B 0x03 0x04 (PK\x03\x04) */
+function isValidZip(bytes: Uint8Array): boolean {
+  if (bytes.length < 22) return false
+  return bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04
+}
+
+/** 校验图片魔数 (PNG, JPEG, WebP) */
+function isValidImage(bytes: Uint8Array): boolean {
+  if (bytes.length < 8) return false
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return true
+  // JPEG: FF D8 FF
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return true
+  // WebP: RIFF....WEBP
+  if (
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return true
+  }
+  return false
 }
 
 export default {
@@ -76,7 +123,7 @@ export default {
         JSON.stringify({
           status: 'ok',
           service: 'coursehub-feedback-worker',
-          version: '0.4.3',
+          version: '0.4.3-rc',
           time: new Date().toISOString()
         }),
         {
@@ -92,9 +139,18 @@ export default {
         return new Response(
           JSON.stringify({
             success: false,
-            message: '提交太频繁，请稍候再试（5 分钟内最多提交 10 次）'
+            message: '提交太频繁，请稍候再试（10 分钟内最多提交 5 次）'
           }),
           { status: 429, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+        )
+      }
+
+      // 请求大小防御 (最大 5MB)
+      const contentLength = Number(request.headers.get('content-length') || '0')
+      if (contentLength > 5 * 1024 * 1024) {
+        return new Response(
+          JSON.stringify({ success: false, message: '请求体超出限制（最大 5MB）' }),
+          { status: 413, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
         )
       }
 
@@ -109,10 +165,19 @@ export default {
       }
 
       // 验证必要字段
-      if (!payload.category || !payload.description || payload.description.trim().length < 3) {
+      if (!payload.category || !payload.description || payload.description.trim().length < 5) {
         return new Response(
-          JSON.stringify({ success: false, message: '请填写有效的问题类型和描述（不少于 3 字）' }),
+          JSON.stringify({ success: false, message: '请填写有效的问题类型和描述（不少于 5 字）' }),
           { status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+        )
+      }
+
+      // 60秒重复提交防御
+      const dupKey = `${clientIp}:${payload.category}:${payload.description.trim()}`
+      if (isDuplicateSubmission(dupKey)) {
+        return new Response(
+          JSON.stringify({ success: false, message: '请勿在 1 分钟内重复提交相同的反馈内容' }),
+          { status: 429, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
         )
       }
 
@@ -127,11 +192,26 @@ export default {
       let storedZip = false
       let storedScreenshot = false
 
-      // 1. 若配置了 R2 存储桶，将诊断包与截图安全存储（私有空间，公开不可查）
+      // 1. 若配置了 R2 存储桶，严格校验文件类型与体积后安全存入私有空间
       if (env.FEEDBACK_STORAGE) {
         if (payload.diagnosticPackageBase64) {
           try {
+            // 体积限制：3MB
+            if (payload.diagnosticPackageBase64.length * 0.75 > 3 * 1024 * 1024) {
+              return new Response(
+                JSON.stringify({ success: false, message: '诊断压缩包超出 3MB 限制' }),
+                { status: 413, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+              )
+            }
+
             const binary = Uint8Array.from(atob(payload.diagnosticPackageBase64), (c) => c.charCodeAt(0))
+            if (!isValidZip(binary)) {
+              return new Response(
+                JSON.stringify({ success: false, message: '诊断附件格式非法（必须为标准 ZIP 文件）' }),
+                { status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+              )
+            }
+
             await env.FEEDBACK_STORAGE.put(`diagnostics/${feedbackId}.zip`, binary, {
               customMetadata: {
                 feedbackId,
@@ -149,8 +229,23 @@ export default {
 
         if (payload.screenshotBase64) {
           try {
+            // 体积限制：2MB
+            if (payload.screenshotBase64.length * 0.75 > 2 * 1024 * 1024) {
+              return new Response(
+                JSON.stringify({ success: false, message: '截图超出 2MB 限制' }),
+                { status: 413, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+              )
+            }
+
             const cleanBase64 = payload.screenshotBase64.replace(/^data:image\/\w+;base64,/, '')
             const binary = Uint8Array.from(atob(cleanBase64), (c) => c.charCodeAt(0))
+            if (!isValidImage(binary)) {
+              return new Response(
+                JSON.stringify({ success: false, message: '截图文件格式非法（仅支持 PNG/JPEG/WebP）' }),
+                { status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+              )
+            }
+
             await env.FEEDBACK_STORAGE.put(`screenshots/${feedbackId}.png`, binary, {
               customMetadata: { feedbackId },
               httpMetadata: { contentType: 'image/png' }
@@ -172,9 +267,9 @@ export default {
 
           let existingIssueNumber: number | null = null
 
-          // 如果有错误指纹，先检索是否已有相同指纹的开放 Issue
+          // 分类 + 指纹双重锁定检索，防止不同分类意外碰撞
           if (fingerprint && fingerprint.startsWith('FP-')) {
-            const query = `repo:${owner}/${repo} is:issue is:open "${fingerprint}"`
+            const query = `repo:${owner}/${repo} is:issue is:open label:user-feedback label:feedback:${payload.category} "${fingerprint}"`
             const searchRes = await fetch(
               `https://api.github.com/search/issues?q=${encodeURIComponent(query)}`,
               {
@@ -186,10 +281,14 @@ export default {
               }
             )
             if (searchRes.ok) {
-              const searchData = (await searchRes.json()) as { items?: { number: number; html_url: string }[] }
+              const searchData = (await searchRes.json()) as { items?: { number: number; html_url: string; comments?: number }[] }
               if (searchData.items && searchData.items.length > 0) {
-                existingIssueNumber = searchData.items[0].number
-                issueUrl = searchData.items[0].html_url
+                // 如果单 Issue 评论数未超限，进行追加聚合
+                const target = searchData.items[0]
+                if ((target.comments || 0) < 50) {
+                  existingIssueNumber = target.number
+                  issueUrl = target.html_url
+                }
               }
             }
           }
@@ -203,7 +302,8 @@ export default {
               `- **操作系统**: \`${payload.systemInfo.os}\``,
               `- **问题描述**: ${payload.description}`,
               payload.reproductionSteps ? `- **复现步骤**: ${payload.reproductionSteps}` : null,
-              `- **私有诊断包**: ${storedZip ? `\`diagnostics/${feedbackId}.zip\`` : '无'}`,
+              `- **私有诊断包**: ${storedZip ? `\`diagnostics/${feedbackId}.zip\`` : '未附带'}`,
+              `- **私有截图**: ${storedScreenshot ? `\`screenshots/${feedbackId}.png\`` : '未附带'}`,
               `*提交时间: ${now.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}*`
             ]
               .filter(Boolean)
@@ -251,7 +351,7 @@ export default {
                 ? `### ⚠️ 最近错误代码\n\`${payload.diagnosticsSummary.recentCodes.join(', ')}\`\n`
                 : '',
               `---`,
-              `*本反馈由 CourseHub 客户端脱敏后自动提交，原始 Cookies、Authorization 及个人身份已严格剔除。*`
+              `*本反馈由 CourseHub 客户端脱敏后提交。原始 Cookies、Authorization、API Key、截图及个人数据均存放在私有受限空间，绝不向公开 Issue 发布。*`
             ].join('\n')
 
             const createRes = await fetch(

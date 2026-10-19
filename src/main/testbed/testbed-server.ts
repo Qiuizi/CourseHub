@@ -73,6 +73,9 @@ export class TestbedServer {
   private activities: TestServerActivity[] = JSON.parse(JSON.stringify(INITIAL_ACTIVITIES))
   private records = new Map<string, TestServerSignInRecord>()
   private feedbackList: Array<{ feedbackId: string; payload: unknown; receivedAt: string }> = []
+  private mockR2Storage = new Map<string, { bytes: number; contentType: string }>()
+  private mockIssues = new Map<string, { issueNumber: number; title: string; count: number; comments: string[] }>()
+  private nextIssueNumber = 101
   private requestCountLastSec = 0
   private lastSecTimestamp = Date.now()
 
@@ -133,11 +136,21 @@ export class TestbedServer {
   reset(): void {
     this.records.clear()
     this.feedbackList = []
+    this.mockR2Storage.clear()
+    this.mockIssues.clear()
     this.activities = JSON.parse(JSON.stringify(INITIAL_ACTIVITIES))
   }
 
   getFeedbackList(): Array<{ feedbackId: string; payload: unknown; receivedAt: string }> {
     return [...this.feedbackList]
+  }
+
+  getMockR2Storage(): Map<string, { bytes: number; contentType: string }> {
+    return new Map(this.mockR2Storage)
+  }
+
+  getMockIssues(): Array<{ issueNumber: number; title: string; count: number; comments: string[] }> {
+    return Array.from(this.mockIssues.values())
   }
 
   private checkRateLimit(): boolean {
@@ -414,7 +427,19 @@ export class TestbedServer {
         res.end(JSON.stringify({ ok: false, code: 'PAYLOAD_TOO_LARGE', message: '请求体超出 64KB 限制' }))
         return
       }
-      const payload = (parsed.body ?? {}) as { category?: string; description?: string }
+      const payload = (parsed.body ?? {}) as {
+        category?: string
+        description?: string
+        reproductionSteps?: string
+        contact?: string
+        diagnosticPackageBase64?: string
+        screenshotBase64?: string
+        diagnosticsSummary?: {
+          errorFingerprint?: string
+          totalErrors?: number
+          recentCodes?: string[]
+        }
+      }
       if (!payload.category || !payload.description) {
         res.writeHead(400, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ success: false, message: '缺少类别或描述' }))
@@ -423,13 +448,53 @@ export class TestbedServer {
       const feedbackId = `FB-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`
       this.feedbackList.push({ feedbackId, payload, receivedAt: new Date().toISOString() })
 
+      // 模拟 R2 存储
+      let storedR2Zip = false
+      let storedR2Shot = false
+      if (payload.diagnosticPackageBase64) {
+        const bin = Buffer.from(payload.diagnosticPackageBase64, 'base64')
+        this.mockR2Storage.set(`diagnostics/${feedbackId}.zip`, { bytes: bin.length, contentType: 'application/zip' })
+        storedR2Zip = true
+      }
+      if (payload.screenshotBase64) {
+        const bin = Buffer.from(payload.screenshotBase64.replace(/^data:image\/\w+;base64,/, ''), 'base64')
+        this.mockR2Storage.set(`screenshots/${feedbackId}.png`, { bytes: bin.length, contentType: 'image/png' })
+        storedR2Shot = true
+      }
+
+      // 模拟 GitHub Issue 聚合去重
+      const fp = payload.diagnosticsSummary?.errorFingerprint
+      let issueNumber = 100
+      let issueCount = 1
+      if (fp) {
+        const existing = this.mockIssues.get(fp)
+        if (existing) {
+          existing.count++
+          existing.comments.push(`+1 report from ${feedbackId}`)
+          issueNumber = existing.issueNumber
+          issueCount = existing.count
+        } else {
+          issueNumber = this.nextIssueNumber++
+          this.mockIssues.set(fp, {
+            issueNumber,
+            title: `[用户反馈] [${payload.category}] ${payload.description.slice(0, 30)}`,
+            count: 1,
+            comments: []
+          })
+        }
+      }
+
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(
         JSON.stringify({
           success: true,
           feedbackId,
+          issueNumber,
+          issueCount,
           message: '本地测试服务端已成功接收并记录反馈（仿真闭环）',
           mockStored: true,
+          storedR2Zip,
+          storedR2Shot,
           totalReceived: this.feedbackList.length
         })
       )
@@ -442,9 +507,36 @@ export class TestbedServer {
       res.end(
         JSON.stringify({
           ok: true,
-          feedbacks: this.feedbackList
+          feedbacks: this.feedbackList,
+          r2Storage: Array.from(this.mockR2Storage.entries()),
+          issues: Array.from(this.mockIssues.values())
         })
       )
+      return
+    }
+
+    // 10. 模拟平台异常场景端点
+    if (req.method === 'GET' && pathname === '/api/simulation/chaoxing-captcha') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+      res.end('<!DOCTYPE html><html><body><div id="captcha">请完成安全验证码 anti-spider verification</div></body></html>')
+      return
+    }
+
+    if (req.method === 'GET' && pathname === '/api/simulation/yuketang-expired') {
+      res.writeHead(401, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ success: false, code: 401, message: '登录会话已失效，请重新登录' }))
+      return
+    }
+
+    if (req.method === 'GET' && pathname === '/api/simulation/server-error') {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ success: false, code: 500, message: 'Internal Server Error' }))
+      return
+    }
+
+    if (req.method === 'GET' && pathname === '/api/simulation/changed-structure') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ code: 1, message: 'success', unexpectedPayloadKey: [{ unexpectedKey: 1 }] }))
       return
     }
 
