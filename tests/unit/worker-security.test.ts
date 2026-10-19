@@ -636,4 +636,59 @@ describe('Cloudflare Worker + D1 免费方案安全与业务测试 (worker-secur
     const job = Array.from(mockSyncJobsTable.values()).find(j => j.feedback_id === 'FB-RETRY-01')
     expect(job?.status).toBe('completed')
   })
+
+  it('13. 幂等性校验：同一 clientFeedbackId 重试提交时，识别已有 D1 记录并直接返回原有单号，不重复建单', async () => {
+    let githubCallCount = 0
+    globalThis.fetch = vi.fn(async () => {
+      githubCallCount++
+      return new Response(JSON.stringify({ number: 888, html_url: 'https://github.com/mock/issue/888' }), { status: 201 })
+    })
+
+    const payload = {
+      clientFeedbackId: 'FB-20261019-IDEMP01',
+      category: 'course_sync',
+      description: '第一次提交并成功记录到 D1',
+      systemInfo: {
+        appVersion: '0.4.3',
+        os: 'Windows 11',
+        timestamp: Date.now()
+      }
+    }
+
+    // 第一次提交
+    const req1 = new Request('https://worker.local/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': '1.1.1.1' },
+      body: JSON.stringify(payload)
+    })
+    const res1 = await worker.fetch(req1, mockEnv)
+    const json1 = (await res1.json()) as any
+
+    expect(res1.status).toBe(200)
+    expect(json1.success).toBe(true)
+    expect(json1.feedbackId).toBe('FB-20261019-IDEMP01')
+    expect(json1.issueNumber).toBe(888)
+    expect(githubCallCount).toBe(1)
+    expect(mockFeedbackTable.has('FB-20261019-IDEMP01')).toBe(true)
+
+    // 第二次携带相同 clientFeedbackId 重试提交（模拟客户端超时重试）
+    const req2 = new Request('https://worker.local/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': '1.1.1.1' },
+      body: JSON.stringify({
+        ...payload,
+        description: '重试提交相同内容'
+      })
+    })
+    const res2 = await worker.fetch(req2, mockEnv)
+    const json2 = (await res2.json()) as any
+
+    expect(res2.status).toBe(200)
+    expect(json2.success).toBe(true)
+    expect(json2.feedbackId).toBe('FB-20261019-IDEMP01')
+    expect(json2.idempotent).toBe(true)
+    // 确认没有再次发起 GitHub Issue API 请求，实现严格幂等
+    expect(githubCallCount).toBe(1)
+  })
 })
+

@@ -24,7 +24,8 @@ import { ok, toErrorResult, CodedError } from '@shared/ipc'
 import { isAllowedRate } from '@shared/video'
 import { validateGeoPoint } from '@shared/geo'
 import { getAdapter, getAllPlatformHealth } from '../adapters'
-import type { FeedbackSubmissionPayload } from '@shared/feedback'
+import type { FeedbackSubmissionPayload, FeedbackSubmissionResult, FeedbackFailureCategory } from '@shared/feedback'
+import { Sanitizer } from '@shared/sanitizer'
 import {
   PLATFORM_CONFIGS,
   PlatformBrowser,
@@ -145,7 +146,7 @@ export async function checkAndDispatchCompatibilityAlert(
       category: 'course_sync',
       description: `[平台自动预警] 检测到${platformLabel}连续 ${report.consecutiveFailures} 次发生课程结构解析异常，疑似官方前端改版。`,
       systemInfo: {
-        appVersion: typeof app?.getVersion === 'function' ? app.getVersion() : '0.4.3-beta.1',
+        appVersion: typeof app?.getVersion === 'function' ? app.getVersion() : '0.4.3-beta.2',
         os: `${process.platform} ${os.release()}`,
         arch: process.arch,
         timestamp: now
@@ -159,32 +160,36 @@ export async function checkAndDispatchCompatibilityAlert(
     }
 
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 6000)
-    const resp = await fetch(remoteEndpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(process.env.COURSEHUB_FEEDBACK_STAGING_KEY
-          ? { 'X-CourseHub-Staging-Key': process.env.COURSEHUB_FEEDBACK_STAGING_KEY }
-          : {})
-      },
-      body: JSON.stringify(workerPayload),
-      signal: controller.signal
-    })
-    clearTimeout(timer)
+    let timer: NodeJS.Timeout | undefined
+    try {
+      timer = setTimeout(() => controller.abort(), 10000)
+      const resp = await fetch(remoteEndpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(process.env.COURSEHUB_FEEDBACK_STAGING_KEY
+            ? { 'X-CourseHub-Staging-Key': process.env.COURSEHUB_FEEDBACK_STAGING_KEY }
+            : {})
+        },
+        body: JSON.stringify(workerPayload),
+        signal: controller.signal
+      })
 
-    if (resp.ok) {
-      await deps.store.writeJson(lockKey, {
-        lastAlertAt: now,
-        fingerprint: report.errorFingerprint || 'unknown'
-      })
-      void deps.store.log('warn', 'compatibility_alert_dispatched', {
-        platform,
-        fingerprint: report.errorFingerprint
-      })
-      return { reported: true }
-    } else {
-      return { reported: false, reason: `http_status_${resp.status}` }
+      if (resp.ok) {
+        await deps.store.writeJson(lockKey, {
+          lastAlertAt: now,
+          fingerprint: report.errorFingerprint || 'unknown'
+        })
+        void deps.store.log('warn', 'compatibility_alert_dispatched', {
+          platform,
+          fingerprint: report.errorFingerprint
+        })
+        return { reported: true }
+      } else {
+        return { reported: false, reason: `http_status_${resp.status}` }
+      }
+    } finally {
+      if (timer) clearTimeout(timer)
     }
   } catch (err) {
     void deps.store.log('warn', 'compatibility_alert_failed', {
@@ -192,6 +197,341 @@ export async function checkAndDispatchCompatibilityAlert(
       error: String(err)
     })
     return { reported: false, reason: String(err) }
+  }
+}
+
+export async function handleFeedbackSubmit(
+  payload: unknown,
+  deps: Pick<IpcDeps, 'store'>
+): Promise<FeedbackSubmissionResult> {
+  const data = payload as FeedbackSubmissionPayload
+  if (!data || typeof data !== 'object') {
+    throw new CodedError('INVALID_REQUEST', '缺少反馈载荷')
+  }
+  if (!data.description || data.description.trim().length < 5) {
+    throw new CodedError('INVALID_REQUEST', '请详细描述遇到的问题（至少 5 个字）')
+  }
+
+  const now = new Date()
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  const dateStr = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
+  const randStr = Math.random().toString(36).substring(2, 8).toUpperCase()
+  const defaultFeedbackId = `FB-${dateStr}-${randStr}`
+
+  const clientCandidate = typeof data.clientFeedbackId === 'string' ? data.clientFeedbackId.trim() : ''
+  const feedbackId = /^(FB|ALERT)-\d{8}-[A-Z0-9]{4,16}$/.test(clientCandidate)
+    ? clientCandidate
+    : defaultFeedbackId
+
+  // 检查是否有配置线上反馈服务 (默认指向经审核的 Staging 免费实例，支持免配置直接联调)
+  const remoteEndpoint =
+    process.env.COURSEHUB_FEEDBACK_ENDPOINT ||
+    'https://coursehub-feedback-staging.tangziqi6609.workers.dev/api/feedback'
+
+  let submittedOnline = false
+  let onlineMsg = ''
+  let issueNum: number | undefined
+  let serverFeedbackId: string | undefined
+  let isIdempotent = false
+  let failureCategory: FeedbackFailureCategory | undefined
+  let failureHttpStatus: number | undefined
+  let failureDurationMs: number | undefined
+  let failureErrorCode: string | undefined
+
+  if (remoteEndpoint) {
+    const startTime = Date.now()
+    let phase: 'initiating' | 'connecting' | 'receiving' | 'parsing' = 'initiating'
+    let timer: NodeJS.Timeout | undefined
+
+    try {
+      let diagnosticsSummary:
+        | {
+            totalErrors: number
+            recentCodes: string[]
+            activePlatform?: string
+            errorFingerprint?: string
+          }
+        | undefined
+
+      if (data.attachDiagnostics) {
+        const pkgData = await deps.store.buildDiagnosticPackage('chaoxing', getAllPlatformHealth())
+        const recentErrors = pkgData.recentErrors
+        const recentCodes = Array.from(new Set(recentErrors.map((e) => e.code))).slice(0, 5)
+        const fp = recentErrors[0]?.fingerprint || undefined
+
+        diagnosticsSummary = {
+          totalErrors: recentErrors.length,
+          recentCodes,
+          activePlatform: pkgData.manifest.runtime.activePlatform,
+          errorFingerprint: fp
+        }
+      }
+
+      const systemInfo = {
+        appVersion: typeof app?.getVersion === 'function' ? app.getVersion() : '0.4.3-beta.2',
+        os: `${process.platform} ${os.release()}`,
+        arch: process.arch,
+        timestamp: now.getTime()
+      }
+
+      const workerPayload = {
+        clientFeedbackId: feedbackId,
+        category: data.category,
+        description: data.description,
+        reproductionSteps: data.reproductionSteps,
+        contact: data.contact,
+        systemInfo,
+        diagnosticsSummary
+      }
+
+      phase = 'connecting'
+      const controller = new AbortController()
+      const TIMEOUT_MS = 12_000 // 12 秒稳健超时，兼顾国内网络访问 Cloudflare 边缘时延
+      timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
+
+      const resp = await fetch(remoteEndpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(process.env.COURSEHUB_FEEDBACK_STAGING_KEY
+            ? { 'X-CourseHub-Staging-Key': process.env.COURSEHUB_FEEDBACK_STAGING_KEY }
+            : {})
+        },
+        body: JSON.stringify(workerPayload),
+        signal: controller.signal
+      })
+
+      phase = 'receiving'
+      const durationMs = Date.now() - startTime
+      failureDurationMs = durationMs
+      failureHttpStatus = resp.status
+
+      if (resp.ok) {
+        phase = 'parsing'
+        let resJson: Record<string, unknown> | null = null
+        try {
+          resJson = (await resp.json()) as Record<string, unknown>
+        } catch {
+          resJson = null
+        }
+
+        if (resJson?.success === true) {
+          submittedOnline = true
+          onlineMsg = typeof resJson?.message === 'string' ? resJson.message : '反馈已成功提交至云端'
+          issueNum = typeof resJson?.issueNumber === 'number' ? (resJson.issueNumber as number) : undefined
+          isIdempotent = resJson?.idempotent === true
+          if (typeof resJson?.feedbackId === 'string' && resJson.feedbackId.trim()) {
+            serverFeedbackId = resJson.feedbackId.trim()
+          }
+
+          await deps.store.recordDiagnostic({
+            module: 'main',
+            level: 'info',
+            type: 'feedback_submit_success',
+            code: 'FEEDBACK_SUBMIT_SUCCESS',
+            summary: `在线反馈提交成功 (${serverFeedbackId || feedbackId})${isIdempotent ? ' [幂等识别]' : ''}`,
+            data: {
+              feedbackId: serverFeedbackId || feedbackId,
+              httpStatus: resp.status,
+              durationMs,
+              phase: 'parsing',
+              issueNumber: issueNum,
+              idempotent: isIdempotent
+            }
+          })
+        } else {
+          submittedOnline = false
+          failureCategory = 'invalid_response'
+          failureErrorCode = 'FEEDBACK_INVALID_RESPONSE'
+          const serverMsg = typeof resJson?.message === 'string' ? Sanitizer.redactString(resJson.message).slice(0, 100) : 'Invalid JSON'
+          await deps.store.recordDiagnostic({
+            module: 'main',
+            level: 'error',
+            type: 'feedback_invalid_response',
+            code: 'FEEDBACK_INVALID_RESPONSE',
+            summary: '在线反馈服务响应无效或操作未成功',
+            data: {
+              feedbackId,
+              httpStatus: resp.status,
+              durationMs,
+              phase: 'parsing',
+              serverMessage: serverMsg
+            }
+          })
+        }
+      } else {
+        submittedOnline = false
+        let serverMsg = ''
+        try {
+          const errText = await resp.text()
+          const parsed = JSON.parse(errText)
+          if (typeof parsed?.message === 'string') {
+            serverMsg = Sanitizer.redactString(parsed.message).slice(0, 100)
+          }
+        } catch {}
+
+        if (resp.status === 401) {
+          failureCategory = 'unauthorized'
+          failureErrorCode = 'FEEDBACK_HTTP_401'
+          await deps.store.recordDiagnostic({
+            module: 'main',
+            level: 'error',
+            type: 'feedback_http_error',
+            code: 'FEEDBACK_HTTP_401',
+            summary: '在线反馈服务访问未授权 (HTTP 401)',
+            data: {
+              feedbackId,
+              httpStatus: 401,
+              durationMs,
+              phase: 'receiving',
+              serverMessage: serverMsg || 'Unauthorized'
+            }
+          })
+        } else if (resp.status === 429) {
+          failureCategory = 'rate_limited'
+          failureErrorCode = 'FEEDBACK_HTTP_429'
+          await deps.store.recordDiagnostic({
+            module: 'main',
+            level: 'warn',
+            type: 'feedback_http_error',
+            code: 'FEEDBACK_HTTP_429',
+            summary: '反馈提交过于频繁触发频控 (HTTP 429)',
+            data: {
+              feedbackId,
+              httpStatus: 429,
+              durationMs,
+              phase: 'receiving',
+              serverMessage: serverMsg || 'Rate Limited'
+            }
+          })
+        } else if (resp.status >= 500) {
+          failureCategory = 'server_error'
+          failureErrorCode = 'FEEDBACK_HTTP_5XX'
+          await deps.store.recordDiagnostic({
+            module: 'main',
+            level: 'error',
+            type: 'feedback_http_error',
+            code: 'FEEDBACK_HTTP_5XX',
+            summary: `在线反馈服务端异常 (HTTP ${resp.status})`,
+            data: {
+              feedbackId,
+              httpStatus: resp.status,
+              durationMs,
+              phase: 'receiving',
+              serverMessage: serverMsg || `Server Error ${resp.status}`
+            }
+          })
+        } else {
+          failureCategory = 'invalid_response'
+          failureErrorCode = 'FEEDBACK_INVALID_RESPONSE'
+          await deps.store.recordDiagnostic({
+            module: 'main',
+            level: 'error',
+            type: 'feedback_http_error',
+            code: 'FEEDBACK_INVALID_RESPONSE',
+            summary: `在线反馈服务返回非预期状态码 (HTTP ${resp.status})`,
+            data: {
+              feedbackId,
+              httpStatus: resp.status,
+              durationMs,
+              phase: 'receiving',
+              serverMessage: serverMsg
+            }
+          })
+        }
+      }
+    } catch (err: unknown) {
+      submittedOnline = false
+      const durationMs = Date.now() - startTime
+      failureDurationMs = durationMs
+      const isAbort = (err as any)?.name === 'AbortError' || String(err).includes('aborted')
+
+      if (isAbort) {
+        failureCategory = 'timeout'
+        failureErrorCode = 'FEEDBACK_TIMEOUT'
+        await deps.store.recordDiagnostic({
+          module: 'main',
+          level: 'error',
+          type: 'feedback_timeout',
+          code: 'FEEDBACK_TIMEOUT',
+          summary: '在线反馈请求超时 (超过 12 秒)',
+          data: {
+            feedbackId,
+            httpStatus: null,
+            durationMs,
+            phase,
+            errorType: 'AbortError'
+          }
+        })
+      } else {
+        failureCategory = 'network_error'
+        failureErrorCode = 'FEEDBACK_NETWORK_ERROR'
+        const safeErrorName = err instanceof Error ? err.name : 'NetworkError'
+        await deps.store.recordDiagnostic({
+          module: 'main',
+          level: 'error',
+          type: 'feedback_network_error',
+          code: 'FEEDBACK_NETWORK_ERROR',
+          summary: '在线反馈网络连接故障或无法建立连接',
+          data: {
+            feedbackId,
+            httpStatus: null,
+            durationMs,
+            phase,
+            errorType: safeErrorName
+          }
+        })
+      }
+    } finally {
+      if (timer) {
+        clearTimeout(timer)
+      }
+    }
+  }
+
+  if (submittedOnline) {
+    const finalFeedbackId = serverFeedbackId || feedbackId
+    return {
+      success: true,
+      feedbackId: finalFeedbackId,
+      createdAt: now.toISOString(),
+      message: onlineMsg || `反馈已成功提交（编号：${finalFeedbackId}），维护者将尽快排查！`,
+      issueNumber: issueNum,
+      durationMs: failureDurationMs,
+      idempotent: isIdempotent
+    }
+  }
+
+  // 离线兜底：自动在本地生成脱敏诊断 ZIP 包。由于刚才已调用 recordDiagnostic 写入 store，本 ZIP 包内包含本次失败的诊断记录
+  const zipExport = await deps.store.exportDiagnosticZip({
+    feedbackNote: [
+      `[反馈分类] ${data.category}`,
+      `[问题描述] ${data.description}`,
+      data.reproductionSteps ? `[复现步骤] ${data.reproductionSteps}` : null,
+      data.contact ? `[联系方式] ${data.contact}` : null,
+      failureErrorCode ? `[在线失败原因] ${failureErrorCode}` : null
+    ]
+      .filter(Boolean)
+      .join('\n'),
+    screenshotBase64: data.screenshotBase64,
+    includeErrors: data.attachDiagnostics === true,
+    healthReports: getAllPlatformHealth()
+  })
+
+  return {
+    success: false,
+    feedbackId,
+    createdAt: now.toISOString(),
+    offlineFallback: true,
+    diagnosticZipPath: zipExport.path,
+    failureCategory: failureCategory || 'network_error',
+    errorCode: failureErrorCode || 'FEEDBACK_NETWORK_ERROR',
+    httpStatus: failureHttpStatus,
+    durationMs: failureDurationMs,
+    message:
+      '在线反馈暂未接通，已自动在本地生成脱敏诊断包：' +
+      zipExport.path +
+      '。你可通过微信、QQ或邮件将其发送给维护者。'
   }
 }
 
@@ -1608,7 +1948,7 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
 
   handle('diagnostics:record-error', async (_event, payload: unknown) => {
     const item = (payload && typeof payload === 'object' ? payload : {}) as {
-      module?: 'renderer' | 'system' | 'ai' | 'video'
+      module?: 'renderer' | 'system' | 'ai' | 'video' | 'geo'
       type?: string
       code?: string
       summary?: string
@@ -1635,138 +1975,7 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
   })
 
   handle('feedback:submit', async (_event, payload: unknown) => {
-    const data = payload as FeedbackSubmissionPayload
-    if (!data || typeof data !== 'object') {
-      throw new CodedError('INVALID_REQUEST', '缺少反馈载荷')
-    }
-    if (!data.description || data.description.trim().length < 5) {
-      throw new CodedError('INVALID_REQUEST', '请详细描述遇到的问题（至少 5 个字）')
-    }
-
-    const now = new Date()
-    const pad = (n: number): string => String(n).padStart(2, '0')
-    const dateStr = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
-    const randStr = Math.random().toString(36).substring(2, 8).toUpperCase()
-    const feedbackId = `FB-${dateStr}-${randStr}`
-
-    // 检查是否有配置线上反馈服务 (默认指向经审核的 Staging 免费实例，支持免配置直接联调)
-    const remoteEndpoint =
-      process.env.COURSEHUB_FEEDBACK_ENDPOINT ||
-      'https://coursehub-feedback-staging.tangziqi6609.workers.dev/api/feedback'
-    let submittedOnline = false
-    let onlineMsg = ''
-    let issueNum: number | undefined
-    let serverFeedbackId: string | undefined
-
-    if (remoteEndpoint) {
-      try {
-        let diagnosticsSummary:
-          | {
-              totalErrors: number
-              recentCodes: string[]
-              activePlatform?: string
-              errorFingerprint?: string
-            }
-          | undefined
-
-        if (data.attachDiagnostics) {
-          const pkgData = await deps.store.buildDiagnosticPackage('chaoxing', getAllPlatformHealth())
-          const recentErrors = pkgData.recentErrors
-          const recentCodes = Array.from(new Set(recentErrors.map((e) => e.code))).slice(0, 5)
-          const fp = recentErrors[0]?.fingerprint || undefined
-
-          diagnosticsSummary = {
-            totalErrors: recentErrors.length,
-            recentCodes,
-            activePlatform: pkgData.manifest.runtime.activePlatform,
-            errorFingerprint: fp
-          }
-        }
-
-        const systemInfo = {
-          appVersion: typeof app?.getVersion === 'function' ? app.getVersion() : '0.4.3-beta.1',
-          os: `${process.platform} ${os.release()}`,
-          arch: process.arch,
-          timestamp: now.getTime()
-        }
-
-        const workerPayload = {
-          clientFeedbackId: feedbackId,
-          category: data.category,
-          description: data.description,
-          reproductionSteps: data.reproductionSteps,
-          contact: data.contact,
-          systemInfo,
-          diagnosticsSummary
-        }
-
-        const controller = new AbortController()
-        const timer = setTimeout(() => controller.abort(), 6000)
-        const resp = await fetch(remoteEndpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(process.env.COURSEHUB_FEEDBACK_STAGING_KEY
-              ? { 'X-CourseHub-Staging-Key': process.env.COURSEHUB_FEEDBACK_STAGING_KEY }
-              : {})
-          },
-          body: JSON.stringify(workerPayload),
-          signal: controller.signal
-        })
-        clearTimeout(timer)
-        if (resp.ok) {
-          const resJson = (await resp.json().catch(() => null)) as Record<string, unknown>
-          if (resJson?.success) {
-            submittedOnline = true
-            onlineMsg = typeof resJson?.message === 'string' ? resJson.message : '反馈已成功提交至云端'
-            issueNum = typeof resJson?.issueNumber === 'number' ? (resJson.issueNumber as number) : undefined
-            if (typeof resJson?.feedbackId === 'string' && resJson.feedbackId.trim()) {
-              serverFeedbackId = resJson.feedbackId.trim()
-            }
-          }
-        }
-      } catch {
-        submittedOnline = false
-      }
-    }
-
-    if (submittedOnline) {
-      const finalFeedbackId = serverFeedbackId || feedbackId
-      return {
-        success: true,
-        feedbackId: finalFeedbackId,
-        createdAt: now.toISOString(),
-        message: onlineMsg || `反馈已成功提交（编号：${finalFeedbackId}），维护者将尽快排查！`,
-        issueNumber: issueNum
-      }
-    }
-
-    // 离线兜底：自动在本地生成脱敏诊断 ZIP 包，严格根据用户选择是否附带错误日志
-    const zipExport = await deps.store.exportDiagnosticZip({
-      feedbackNote: [
-        `[反馈分类] ${data.category}`,
-        `[问题描述] ${data.description}`,
-        data.reproductionSteps ? `[复现步骤] ${data.reproductionSteps}` : null,
-        data.contact ? `[联系方式] ${data.contact}` : null
-      ]
-        .filter(Boolean)
-        .join('\n'),
-      screenshotBase64: data.screenshotBase64,
-      includeErrors: data.attachDiagnostics === true,
-      healthReports: getAllPlatformHealth()
-    })
-
-    return {
-      success: false,
-      feedbackId,
-      createdAt: now.toISOString(),
-      offlineFallback: true,
-      diagnosticZipPath: zipExport.path,
-      message:
-        '在线反馈通道暂不可用，已自动在本地生成脱敏诊断包：' +
-        zipExport.path +
-        '。你可通过微信、QQ或邮件将其发送给维护者。'
-    }
+    return await handleFeedbackSubmit(payload, deps)
   })
 
   return {

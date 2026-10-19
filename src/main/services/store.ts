@@ -26,6 +26,24 @@ export type JsonObject = Record<string, unknown>
 const MAX_LOG_BYTES = 20 * 1024 * 1024
 const LOG_RETENTION_DAYS = 7
 
+export function resolveBuildCommit(): string {
+  if (typeof process.env.VITE_BUILD_COMMIT === 'string' && process.env.VITE_BUILD_COMMIT.trim()) {
+    return process.env.VITE_BUILD_COMMIT.trim()
+  }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { execSync } = require('node:child_process')
+    const rev = execSync('git rev-parse --short HEAD', {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).trim()
+    if (rev && /^[0-9a-f]{7,40}$/i.test(rev)) {
+      return rev
+    }
+  } catch {}
+  return '65d9472'
+}
+
 export class Store {
   private readonly root: string
   private writeChain: Promise<void> = Promise.resolve()
@@ -220,11 +238,12 @@ export class Store {
     const recentErrors = await this.getRecentDiagnostics(100)
     const now = new Date()
 
+    const buildCommit = resolveBuildCommit()
     const manifest: DiagnosticManifest = {
       app: {
         name: 'CourseHub',
-        version: typeof app?.getVersion === 'function' ? app.getVersion() : '0.4.3-beta',
-        buildCommit: '2b351ad',
+        version: typeof app?.getVersion === 'function' ? app.getVersion() : '0.4.3-beta.2',
+        buildCommit,
         environment: app?.isPackaged ? 'production' : 'development'
       },
       system: {
@@ -242,7 +261,7 @@ export class Store {
         platformsHealth: healthReports || ({} as Record<PlatformId, PlatformHealthReport>)
       },
       privacyNotice:
-        '本诊断数据已执行严格脱敏，绝不包含 Cookie、Token、API Key、密码、真实姓名、学生学号、个人用户名与答题私有内容。'
+        '本诊断数据已执行严格脱敏，绝不包含 Cookie、Token、API Key、密码、真实姓名、学生学号、个人用户名与答题私有内容。截图为像素位图，请人工核对后选择是否附带。'
     }
 
     const distinctCodes = Array.from(new Set(recentErrors.map((e) => e.code))).slice(0, 5)
@@ -336,9 +355,10 @@ export class Store {
           '',
           '隐私安全声明：',
           '1. 已通过规则过滤与黑名单拦截清除常见 Cookies、Token、API Key、密码等凭据。',
-          '2. 已清除 Windows 个人用户名路径与 URL 鉴权 Query 参数。',
-          '3. 不包含任何课程题目作答私有记录、聊天隐私或第三方历史记录。',
-          '4. 本程序通过规则过滤最大化保护隐私，但不构成绝对“零泄露”数学证明。建议在提交前通过界面仔细核对脱敏预览。',
+          '2. 结构化日志中已清除 Windows 个人用户名路径与 URL 鉴权 Query 参数。',
+          '3. 结构化日志中不包含任何课程题目作答私有记录、聊天隐私或第三方历史记录。',
+          '4. 【重要图像隐私提示】：若诊断包内包含 screenshot.png，该截图为用户选择截取的屏幕像素位图，无法通过文本规则完全脱敏，可能显示界面可见的课程名称、任务标题或窗口内容。用户在提交前可自行核对并决定是否附带。',
+          '5. 本程序通过规则过滤最大化保护隐私，但不构成绝对“零泄露”数学证明。',
           '',
           `生成时间: ${now.toISOString()}`,
           `客户端版本: ${data.manifest.app.version}`

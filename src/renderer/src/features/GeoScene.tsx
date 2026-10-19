@@ -9,15 +9,43 @@ import {
   RotateCcw,
   AlertTriangle,
   CheckCircle2,
-  Loader2
+  Loader2,
+  RefreshCw
 } from 'lucide-react'
 import type { GeoTestRun, GeoCoordinateSystem } from '@shared/types'
 import { validateGeoPoint, gcj02ToWgs84Approx, haversineMeters, GCJ02_MAX_OFFSET_METERS } from '@shared/geo'
 import { Card, Notice, Rows, Seg, CapChip } from '../components/ui'
 
-/** OSM 瓦片。需保留 attribution（OSM 使用政策要求）。 */
-const TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
-const TILE_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+export interface TileProvider {
+  id: string
+  name: string
+  url: string
+  attribution: string
+  subdomains?: string[]
+}
+
+/** 瓦片源：默认首选 OpenStreetMap 官方（免 Key 合规），备选 CARTO 浅色（需 API Key）与自定义源 */
+export const TILE_PROVIDERS: TileProvider[] = [
+  {
+    id: 'osm_standard',
+    name: 'OpenStreetMap 官方 (默认)',
+    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors'
+  },
+  {
+    id: 'carto_light',
+    name: 'CARTO 浅色 (需 API Key / 无 Key 含水印)',
+    url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+    attribution: '&copy; <a href="https://carto.com/attributions" target="_blank" rel="noreferrer">CARTO</a>, &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors',
+    subdomains: ['a', 'b', 'c', 'd']
+  },
+  {
+    id: 'custom',
+    name: '自定义瓦片 URL',
+    url: '',
+    attribution: '自定义地图图源'
+  }
+]
 
 /** 修复 Leaflet 默认 marker 图标在打包后的路径问题（用内联 SVG，不依赖图片资源）。 */
 const MARKER_ICON = L.divIcon({
@@ -55,6 +83,8 @@ export function GeoScene({ run, busy, onStart, onStop }: GeoSceneProps): ReactNo
   const mapEl = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<L.Map | null>(null)
   const markerRef = useRef<L.Marker | null>(null)
+  const tileLayerRef = useRef<L.TileLayer | null>(null)
+  const errorLoggedRef = useRef<string | null>(null)
 
   const [lat, setLat] = useState('30.6572')
   const [lon, setLon] = useState('104.0657')
@@ -62,6 +92,31 @@ export function GeoScene({ run, busy, onStart, onStop }: GeoSceneProps): ReactNo
   const [system, setSystem] = useState<GeoCoordinateSystem>('wgs84')
   const [error, setError] = useState<string | null>(null)
   const [tilesFailed, setTilesFailed] = useState(false)
+  const [providerId, setProviderId] = useState<string>(() => {
+    try {
+      return localStorage.getItem('coursehub_tile_provider') || 'osm_standard'
+    } catch {
+      return 'osm_standard'
+    }
+  })
+  const [cartoApiKey, setCartoApiKey] = useState<string>(() => {
+    try {
+      return localStorage.getItem('coursehub_carto_api_key') || ''
+    } catch {
+      return ''
+    }
+  })
+  const [customTileUrl, setCustomTileUrl] = useState<string>(() => {
+    try {
+      return localStorage.getItem('coursehub_custom_tile_url') || ''
+    } catch {
+      return ''
+    }
+  })
+  const [tileRetryKey, setTileRetryKey] = useState(0)
+
+  // 当前瓦片源
+  const currentProvider = TILE_PROVIDERS.find((p) => p.id === providerId) || TILE_PROVIDERS[0]
 
   // 输入值 -> WGS-84 合法点。非法时返回 null，地图不跳到 NaN。
   const point = (() => {
@@ -74,6 +129,59 @@ export function GeoScene({ run, busy, onStart, onStop }: GeoSceneProps): ReactNo
   })()
   const latLng: L.LatLngTuple | null = point ? [point.latitude, point.longitude] : null
 
+  // ---------------- 绑定或切换瓦片图层 ----------------
+  const attachTileLayer = useCallback(
+    (map: L.Map, provider: TileProvider, currentCartoKey: string, currentCustomUrl: string) => {
+      if (tileLayerRef.current) {
+        map.removeLayer(tileLayerRef.current)
+        tileLayerRef.current = null
+      }
+
+      setTilesFailed(false)
+
+      let urlPattern = provider.url
+      if (provider.id === 'carto_light') {
+        const trimmedKey = currentCartoKey.trim()
+        if (trimmedKey) {
+          urlPattern = `${provider.url}?key=${encodeURIComponent(trimmedKey)}`
+        }
+      } else if (provider.id === 'custom') {
+        urlPattern = currentCustomUrl.trim() || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+      }
+
+      const layer = L.tileLayer(urlPattern, {
+        attribution: provider.attribution,
+        maxZoom: 19,
+        subdomains: provider.subdomains || 'abc'
+      })
+
+      layer.on('tileerror', () => {
+        setTilesFailed(true)
+        // 防抖记录安全诊断事件，不污染或影响平台状态机
+        if (errorLoggedRef.current !== `${provider.id}:${urlPattern}`) {
+          errorLoggedRef.current = `${provider.id}:${urlPattern}`
+          void window.coursehub.diagnostics
+            .recordError({
+              module: 'geo',
+              type: 'map_tile_error',
+              code: 'MAP_TILE_LOAD_ERROR',
+              summary: `地图瓦片加载失败 (${provider.name})，可能由于国内网络受阻或连接超时`,
+              platform: undefined,
+              data: {
+                providerId: provider.id,
+                urlPattern
+              }
+            })
+            .catch(() => {})
+        }
+      })
+
+      layer.addTo(map)
+      tileLayerRef.current = layer
+    },
+    []
+  )
+
   // ---------------- 初始化地图 ----------------
   useEffect(() => {
     if (!mapEl.current || mapRef.current) return
@@ -85,12 +193,7 @@ export function GeoScene({ run, busy, onStart, onStop }: GeoSceneProps): ReactNo
       attributionControl: true
     })
 
-    L.tileLayer(TILE_URL, {
-      attribution: TILE_ATTR,
-      maxZoom: 19
-    })
-      .on('tileerror', () => setTilesFailed(true))
-      .addTo(map)
+    attachTileLayer(map, currentProvider, cartoApiKey, customTileUrl)
 
     const marker = L.marker([30.6572, 104.0657], { icon: MARKER_ICON, draggable: true }).addTo(map)
 
@@ -110,17 +213,29 @@ export function GeoScene({ run, busy, onStart, onStop }: GeoSceneProps): ReactNo
     mapRef.current = map
     markerRef.current = marker
 
-    // 容器尺寸变化时刷新，避免抽屉折叠后地图空白
+    // 容器尺寸变化或初次渲染时刷新，避免抽屉折叠后地图空白
     const ro = new ResizeObserver(() => map.invalidateSize())
     ro.observe(mapEl.current)
+    const t1 = setTimeout(() => map.invalidateSize(), 200)
+    const t2 = setTimeout(() => map.invalidateSize(), 600)
 
     return () => {
+      clearTimeout(t1)
+      clearTimeout(t2)
       ro.disconnect()
       map.remove()
       mapRef.current = null
       markerRef.current = null
+      tileLayerRef.current = null
     }
   }, [])
+
+  // 瓦片源切换或重试触发
+  useEffect(() => {
+    if (mapRef.current) {
+      attachTileLayer(mapRef.current, currentProvider, cartoApiKey, customTileUrl)
+    }
+  }, [providerId, tileRetryKey, attachTileLayer, currentProvider, cartoApiKey, customTileUrl])
 
   // 坐标变化时同步标记与视图
   useEffect(() => {
@@ -183,7 +298,47 @@ export function GeoScene({ run, busy, onStart, onStop }: GeoSceneProps): ReactNo
     <div style={{ maxWidth: 1120, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'grid', gridTemplateColumns: '1.35fr 1fr', gap: 16, alignItems: 'start' }}>
         {/* ---------------- 左：地图 ---------------- */}
-        <Card title="测试地图" style={{ padding: 14 }}>
+        <Card
+          title="测试地图"
+          style={{ padding: 14 }}
+          action={
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <select
+                className="field"
+                style={{ padding: '3px 6px', fontSize: 11, height: 26, width: 'auto' }}
+                value={providerId}
+                onChange={(e) => {
+                  const val = e.target.value
+                  setProviderId(val)
+                  setTilesFailed(false)
+                  try {
+                    localStorage.setItem('coursehub_tile_provider', val)
+                  } catch {}
+                }}
+                title="切换地图瓦片源"
+              >
+                {TILE_PROVIDERS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                style={{ padding: '3px 8px', fontSize: 11, height: 26 }}
+                onClick={() => {
+                  setTilesFailed(false)
+                  setTileRetryKey((k) => k + 1)
+                }}
+                title="重新加载瓦片"
+              >
+                <RefreshCw size={12} />
+                重试
+              </button>
+            </div>
+          }
+        >
           <div
             id="ch-map"
             ref={mapEl}
@@ -191,11 +346,126 @@ export function GeoScene({ run, busy, onStart, onStop }: GeoSceneProps): ReactNo
             role="application"
             aria-label="定位测试地图，点击或拖动标记选择坐标"
           />
+
+          {/* 瓦片图层设置 (当选择 CARTO 或 自定义 时展示) */}
+          {providerId === 'carto_light' && (
+            <div
+              style={{
+                marginTop: 8,
+                padding: '6px 10px',
+                background: 'var(--ch-subtle)',
+                borderRadius: 6,
+                fontSize: 11,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 4
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+                <span style={{ fontWeight: 600 }}>CARTO API Key:</span>
+                <span style={{ fontSize: 10.5, color: 'var(--ch-text-3)' }}>
+                  无 Key 含斜向官方水印。可前往{' '}
+                  <a
+                    href="https://carto.com/basemaps/apikey/"
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ color: 'var(--ch-primary)', textDecoration: 'underline' }}
+                  >
+                    carto.com/basemaps/apikey
+                  </a>{' '}
+                  免费申请（非商用 500 万次/月）
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <input
+                  className="field"
+                  style={{ fontSize: 11, height: 26, flex: 1 }}
+                  placeholder="粘贴 CARTO API Key (可选)"
+                  value={cartoApiKey}
+                  onChange={(e) => {
+                    const val = e.target.value
+                    setCartoApiKey(val)
+                    try {
+                      localStorage.setItem('coursehub_carto_api_key', val)
+                    } catch {}
+                  }}
+                />
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  style={{ fontSize: 11, height: 26, padding: '2px 8px' }}
+                  onClick={() => {
+                    setTilesFailed(false)
+                    setTileRetryKey((k) => k + 1)
+                  }}
+                >
+                  应用
+                </button>
+              </div>
+            </div>
+          )}
+
+          {providerId === 'custom' && (
+            <div
+              style={{
+                marginTop: 8,
+                padding: '6px 10px',
+                background: 'var(--ch-subtle)',
+                borderRadius: 6,
+                fontSize: 11,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 4
+              }}
+            >
+              <span style={{ fontWeight: 600 }}>自定义瓦片 URL 模板:</span>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <input
+                  className="field"
+                  style={{ fontSize: 11, height: 26, flex: 1 }}
+                  placeholder="https://example.com/tiles/{z}/{x}/{y}.png"
+                  value={customTileUrl}
+                  onChange={(e) => {
+                    const val = e.target.value
+                    setCustomTileUrl(val)
+                    try {
+                      localStorage.setItem('coursehub_custom_tile_url', val)
+                    } catch {}
+                  }}
+                />
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  style={{ fontSize: 11, height: 26, padding: '2px 8px' }}
+                  onClick={() => {
+                    setTilesFailed(false)
+                    setTileRetryKey((k) => k + 1)
+                  }}
+                >
+                  应用
+                </button>
+              </div>
+            </div>
+          )}
+
           {tilesFailed && (
             <div style={{ marginTop: 10 }}>
               <Notice tone="warn">
-                在线瓦片加载失败（可能无外网或 OSM 暂时不可用）。
-                地图选点不可用时请直接用手动输入经纬度，覆盖与读回功能不受影响。
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ fontWeight: 600 }}>⚠️ 地图底图瓦片加载受阻（当前网络环境可能无法直连瓦片服务器）</div>
+                  <div style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--ch-text-2)' }}>
+                    <strong>【核心功能不受影响】</strong>：Web Geolocation 经纬度覆盖、页面真实读回与偏差核验<strong>完全正常工作</strong>。
+                  </div>
+                  <div style={{ fontSize: 11, lineHeight: 1.5 }}>
+                    你可以：
+                    <ul style={{ margin: '4px 0 4px 16px', padding: 0 }}>
+                      <li>直接在右侧面板手动输入经纬度数值执行测试；</li>
+                      <li>在地图空白网格中依然可以点选或拖动蓝色图钉选取坐标；</li>
+                      <li>点击右上角<strong>「重试」</strong>重新请求瓦片；</li>
+                      <li>切换图源为「CARTO 浅色」（可选填免费 Key）或自定义瓦片源。</li>
+                    </ul>
+                  </div>
+                </div>
               </Notice>
             </div>
           )}
@@ -210,7 +480,7 @@ export function GeoScene({ run, busy, onStart, onStop }: GeoSceneProps): ReactNo
               color: 'var(--ch-text-3)'
             }}
           >
-            <span>© OpenStreetMap contributors</span>
+            <span>源: {currentProvider.name}</span>
             <button
               type="button"
               className="btn btn-ghost"

@@ -102,6 +102,7 @@ export interface DiagnosticPackageData {
 
 /** 用户提交反馈载荷 */
 export interface FeedbackSubmissionPayload {
+  clientFeedbackId?: string
   category: FeedbackCategory
   description: string
   reproductionSteps?: string
@@ -110,6 +111,15 @@ export interface FeedbackSubmissionPayload {
   screenshotBase64?: string
   diagnosticData?: DiagnosticPackageData
 }
+
+/** 在线反馈失败具体类别 */
+export type FeedbackFailureCategory =
+  | 'network_error'
+  | 'timeout'
+  | 'unauthorized'
+  | 'rate_limited'
+  | 'server_error'
+  | 'invalid_response'
 
 /** 反馈处理返回状态 */
 export interface FeedbackSubmissionResult {
@@ -120,4 +130,10 @@ export interface FeedbackSubmissionResult {
   offlineFallback?: boolean
   diagnosticZipPath?: string
   issueNumber?: number
+  failureCategory?: FeedbackFailureCategory
+  httpStatus?: number
+  durationMs?: number
+  errorCode?: string
+  idempotent?: boolean
 }
+

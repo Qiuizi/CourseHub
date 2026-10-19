@@ -20,7 +20,8 @@ import {
   Sparkles,
   ZapOff,
   Layout,
-  Loader2
+  Loader2,
+  RotateCcw
 } from 'lucide-react'
 import { Card, Notice, Switch } from '../components/ui'
 import {
@@ -36,6 +37,59 @@ export interface FeedbackCardProps {
   onNotify: (text: string) => void
   initialCategory?: FeedbackCategory
   initialDescription?: string
+}
+
+function generateClientFeedbackId(): string {
+  const now = new Date()
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  const dateStr = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
+  const randStr = Math.random().toString(36).substring(2, 8).toUpperCase()
+  return `FB-${dateStr}-${randStr}`
+}
+
+function maskPath(fullPath?: string): string {
+  if (!fullPath) return ''
+  return fullPath.replace(/([a-zA-Z]:\\Users\\)[^\\]+(\\.*)/i, '$1[用户目录]$2')
+}
+
+function getFailureDetail(result: FeedbackSubmissionResult): { title: string; desc: string } {
+  switch (result.failureCategory) {
+    case 'timeout':
+      return {
+        title: '⚠️ 网络连接超时（服务器响应较慢）',
+        desc: '连接在线反馈服务器超过 12 秒无响应，可能由于当前网络与云端连接时延较高。'
+      }
+    case 'rate_limited':
+      return {
+        title: '⚠️ 反馈提交过于频繁',
+        desc: '触发了服务端安全频控保护（10 分钟内最多提交 5 次），请稍后再试。'
+      }
+    case 'unauthorized':
+      return {
+        title: '⚠️ 反馈服务测试访问未授权',
+        desc: '云端测试服务密钥校验失败（HTTP 401）。'
+      }
+    case 'server_error':
+      return {
+        title: '⚠️ 云端反馈服务暂时故障',
+        desc: `云端反馈服务器暂时繁忙或维护中${result.httpStatus ? ` (HTTP ${result.httpStatus})` : ''}。`
+      }
+    case 'network_error':
+      return {
+        title: '⚠️ 本地网络未连通或连接受阻',
+        desc: '本地网络无法建立与反馈服务器的连接（可能无外网、DNS解析失败或网络连接被重置）。'
+      }
+    case 'invalid_response':
+      return {
+        title: '⚠️ 反馈服务响应异常',
+        desc: '在线反馈服务返回了非预期响应。'
+      }
+    default:
+      return {
+        title: '⚠️ 在线反馈服务暂未接通或网络连接受阻',
+        desc: '在线反馈服务暂未接通。'
+      }
+  }
 }
 
 export function FeedbackCard({
@@ -78,6 +132,7 @@ export function FeedbackCard({
   const [submitting, setSubmitting] = useState(false)
   const [submitResult, setSubmitResult] = useState<FeedbackSubmissionResult | null>(null)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const [draftFeedbackId, setDraftFeedbackId] = useState<string>(() => generateClientFeedbackId())
 
   const [showPreview, setShowPreview] = useState(false)
   const [previewData, setPreviewData] = useState<DiagnosticPackageData | null>(null)
@@ -176,6 +231,7 @@ export function FeedbackCard({
 
     try {
       const res = await window.coursehub.feedback.submit({
+        clientFeedbackId: draftFeedbackId,
         category,
         description: description.trim(),
         reproductionSteps: reproductionSteps.trim() || undefined,
@@ -188,6 +244,8 @@ export function FeedbackCard({
         setSubmitResult(res.data)
         if (res.data.success) {
           onNotify(`反馈提交成功，编号：${res.data.feedbackId}`)
+          // 提交成功后重置，为后续可能的新反馈生成新编号
+          setDraftFeedbackId(generateClientFeedbackId())
         } else {
           onNotify('在线服务不可用，已导出本地诊断包')
         }
@@ -199,7 +257,7 @@ export function FeedbackCard({
     } finally {
       setSubmitting(false)
     }
-  }, [category, description, reproductionSteps, contact, attachDiagnostics, screenshotBase64, onNotify])
+  }, [draftFeedbackId, category, description, reproductionSteps, contact, attachDiagnostics, screenshotBase64, onNotify])
 
   // 直接导出离线 ZIP
   const handleExportZip = useCallback(async () => {
@@ -220,7 +278,7 @@ export function FeedbackCard({
       })
 
       if (res.ok) {
-        onNotify(`脱敏诊断包已导出至：${res.data.path}`)
+        onNotify(`脱敏诊断包已导出至：${maskPath(res.data.path)}`)
       } else {
         onNotify(`导出失败：${res.error.message}`)
       }
@@ -391,6 +449,9 @@ export function FeedbackCard({
               onChange={handleFileUpload}
             />
           </div>
+          <div style={{ fontSize: 10.5, color: 'var(--ch-text-3)', marginTop: 6, lineHeight: 1.5 }}>
+            ⚠️ 提示：截图捕获当前屏幕画面，可能包含界面上的课程名或路径。提交前请确认预览，涉及隐私可随时点击 ✕ 移除。
+          </div>
 
           {screenshotBase64 && (
             <div
@@ -538,25 +599,46 @@ export function FeedbackCard({
                   </div>
                 </div>
               </Notice>
-            ) : (
-              <Notice tone="warn">
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <div style={{ fontWeight: 600, fontSize: 12 }}>
-                    ⚠️ 在线反馈服务暂未接通或网络连接受阻
+            ) : (() => {
+              const detail = getFailureDetail(submitResult)
+              return (
+                <Notice tone="warn">
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <div style={{ fontWeight: 600, fontSize: 12 }}>
+                      {detail.title}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--ch-text-2)' }}>
+                      {detail.desc}
+                    </div>
+                    <div style={{ fontSize: 11, lineHeight: 1.6 }}>
+                      已自动为你保全填写内容并在本地生成脱敏诊断包：
+                      <br />
+                      <code style={{ wordBreak: 'break-all', fontSize: 10.5 }}>
+                        {maskPath(submitResult.diagnosticZipPath)}
+                      </code>
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--ch-text-2)' }}>
+                      你可直接将此 ZIP 文件或点击下方「复制问题摘要」通过微信、QQ、GitHub Issue 或邮件发送给开发者。
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        onClick={() => void handleSubmit()}
+                        disabled={submitting}
+                        style={{ fontSize: 11, padding: '4px 10px' }}
+                      >
+                        {submitting ? <Loader2 size={12} className="spin" /> : <RotateCcw size={12} />}
+                        重试在线提交 (单号: {draftFeedbackId})
+                      </button>
+                    </div>
+                    <div style={{ fontSize: 10, color: 'var(--ch-text-3)', marginTop: 2 }}>
+                      💡 重试将复用该单号进行幂等校验：若服务端已落库将直接确认成功，绝不产生重复记录或重复 Issue。
+                    </div>
                   </div>
-                  <div style={{ fontSize: 11, lineHeight: 1.6 }}>
-                    已自动为你保全填写内容并在本地生成脱敏诊断包：
-                    <br />
-                    <code style={{ wordBreak: 'break-all', fontSize: 10.5 }}>
-                      {submitResult.diagnosticZipPath}
-                    </code>
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--ch-text-2)' }}>
-                    你可直接将此 ZIP 文件或点击下方「复制问题摘要」通过微信、QQ、GitHub Issue 或邮件发送给开发者。
-                  </div>
-                </div>
-              </Notice>
-            )}
+                </Notice>
+              )
+            })()}
           </div>
         )}
 
@@ -569,7 +651,7 @@ export function FeedbackCard({
             disabled={submitting || description.trim().length < 5}
           >
             {submitting ? <Loader2 size={14} className="spin" /> : <Send size={14} />}
-            提交反馈
+            {submitResult && !submitResult.success ? '重试在线提交' : '提交反馈'}
           </button>
 
           <button type="button" className="btn" onClick={() => void handleExportZip()}>

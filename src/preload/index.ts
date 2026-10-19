@@ -220,7 +220,7 @@ const api = {
     exportZip: (input?: { activePlatform?: PlatformId; feedbackNote?: string; screenshotBase64?: string }) =>
       invoke<{ path: string; bytes: number; filename: string }>('diagnostics:export-zip', input),
     recordError: (error: {
-      module?: 'renderer' | 'system' | 'ai' | 'video'
+      module?: 'renderer' | 'system' | 'ai' | 'video' | 'geo'
       type?: string
       code?: string
       summary?: string

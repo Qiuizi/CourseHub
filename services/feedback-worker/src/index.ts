@@ -411,7 +411,7 @@ export default {
       const rand = Math.random().toString(36).substring(2, 8).toUpperCase()
       const defaultFeedbackId = `${isAutoAlert ? 'ALERT' : 'FB'}-${yyyy}${mm}${dd}-${rand}`
       const clientCandidate = typeof payload.clientFeedbackId === 'string' ? payload.clientFeedbackId.trim() : ''
-      const feedbackId = /^(FB|ALERT)-\d{8}-[A-Z0-9]{4,10}$/.test(clientCandidate)
+      const feedbackId = /^(FB|ALERT)-\d{8}-[A-Z0-9]{4,16}$/.test(clientCandidate)
         ? clientCandidate
         : defaultFeedbackId
 
@@ -420,6 +420,37 @@ export default {
       const safeReproSteps = payload.reproductionSteps ? sanitizeText(payload.reproductionSteps.trim()) : null
       const safeContact = payload.contact ? sanitizeText(payload.contact.trim()) : null
       const fingerprint = payload.diagnosticsSummary?.errorFingerprint
+
+      // 2.5 幂等重试校验：若反馈流水号已在 D1 中存在，说明此前请求已在服务端成功落库（客户端因网络抖动或超时未收到 ACK）
+      try {
+        const existingFb = await env.DB.prepare(
+          'SELECT id, status, github_issue_number, github_issue_url, created_at FROM feedback WHERE id = ?'
+        )
+          .bind(feedbackId)
+          .first<{
+            id: string
+            status: string
+            github_issue_number: number | null
+            github_issue_url: string | null
+            created_at: string
+          }>()
+
+        if (existingFb) {
+          return new Response(
+            JSON.stringify({
+              success: true,
+              feedbackId: existingFb.id,
+              message: '反馈早前已成功接收（已幂等去重，无需重复创建）',
+              issueNumber: existingFb.github_issue_number || undefined,
+              issueUrl: existingFb.github_issue_url || undefined,
+              idempotent: true
+            }),
+            { status: 200, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+          )
+        }
+      } catch (idempErr) {
+        console.warn('Idempotency query warning:', idempErr)
+      }
 
       // 3. 写入 D1 反馈记录表 (事务性保证)
       try {
