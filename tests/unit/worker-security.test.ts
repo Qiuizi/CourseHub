@@ -737,5 +737,102 @@ describe('Cloudflare Worker + D1 免费方案安全与业务测试 (worker-secur
     // 仅建单一次
     expect(githubCallCount).toBe(1)
   })
+
+  it('15. 同 IP 达到频控上限后，已有合法且匹配原请求的已落库反馈仍可幂等重试并获取原有状态，不被 429 拦截', async () => {
+    let githubCallCount = 0
+    globalThis.fetch = vi.fn(async () => {
+      githubCallCount++
+      return new Response(JSON.stringify({ number: 888, html_url: 'https://github.com/mock/issue/888' }), { status: 201 })
+    })
+
+    const testIp = '198.51.100.55'
+    const existingFeedbackId = 'FB-20261019-LIMIT01'
+
+    // 1. 首次正常提交并成功落库
+    const initialPayload = {
+      clientFeedbackId: existingFeedbackId,
+      category: 'login',
+      description: '首次提交成功落库记录',
+      systemInfo: { appVersion: '0.4.3', os: 'Windows 11', timestamp: Date.now() }
+    }
+
+    const firstRes = await worker.fetch(
+      new Request('https://worker.local/api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': testIp },
+        body: JSON.stringify(initialPayload)
+      }),
+      mockEnv
+    )
+    expect(firstRes.status).toBe(200)
+    expect(githubCallCount).toBe(1)
+
+    // 2. 模拟该 IP 继续发送 4 次请求达到 5 次限额（此时 rate_limits count = 5）
+    for (let i = 0; i < 4; i++) {
+      await worker.fetch(
+        new Request('https://worker.local/api/feedback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': testIp },
+          body: JSON.stringify({
+            clientFeedbackId: `FB-20261019-FILL0${i}`,
+            category: 'login',
+            description: `测试填充提交 ${i}`,
+            systemInfo: { appVersion: '0.4.3', os: 'Windows 11', timestamp: Date.now() }
+          })
+        }),
+        mockEnv
+      )
+    }
+
+    // 此时 testIp 在 rate_limits 中的计数已达 5 次（上限）
+    // 3. 再次以相同 clientFeedbackId 重试原有反馈：应安全返回原有状态（幂等），不被 429 拦截
+    const retryRes = await worker.fetch(
+      new Request('https://worker.local/api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': testIp },
+        body: JSON.stringify(initialPayload)
+      }),
+      mockEnv
+    )
+
+    const retryJson = (await retryRes.json()) as any
+    expect(retryRes.status).toBe(200)
+    expect(retryJson.success).toBe(true)
+    expect(retryJson.idempotent).toBe(true)
+    expect(retryJson.feedbackId).toBe(existingFeedbackId)
+    expect(retryJson.issueNumber).toBe(888)
+    // 确认未重复建单
+    expect(githubCallCount).toBe(5) // 首次1次 + 填充4次 = 5次，重试未发起第6次
+  })
+
+  it('16. 同 IP 达到频控上限后，新提交的反馈（新 ID 或未落库记录）继续被准确返回 429 Too Many Requests', async () => {
+    const testIp = '198.51.100.55'
+
+    // 模拟该 IP 在 D1 中的计数已达上限（5次）
+    mockRateLimitsTable.set(testIp, { count: 5, reset_at: Date.now() + 10 * 60 * 1000 })
+
+    // 尝试提交全新的反馈（ID 未落库）
+    const newPayload = {
+      clientFeedbackId: 'FB-20261019-BLOCKED',
+      category: 'login',
+      description: '超额后提交全新反馈',
+      systemInfo: { appVersion: '0.4.3', os: 'Windows 11', timestamp: Date.now() }
+    }
+
+    const blockedRes = await worker.fetch(
+      new Request('https://worker.local/api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': testIp },
+        body: JSON.stringify(newPayload)
+      }),
+      mockEnv
+    )
+
+    const blockedJson = (await blockedRes.json()) as any
+    expect(blockedRes.status).toBe(429)
+    expect(blockedJson.success).toBe(false)
+    expect(blockedJson.message).toContain('提交太频繁')
+  })
 })
+
 

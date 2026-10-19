@@ -382,18 +382,7 @@ export default {
 
       const clientIp = request.headers.get('cf-connecting-ip') || 'unknown'
 
-      // 1. D1 持久化 IP 频控防御 (10 分钟最多 5 次)
-      if (await checkD1RateLimit(env.DB, clientIp, 5, 10 * 60 * 1000)) {
-        return new Response(
-          JSON.stringify({
-            success: false,
-            message: '提交太频繁，请稍候再试（10 分钟内最多提交 5 次）'
-          }),
-          { status: 429, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
-        )
-      }
-
-      // 2. 载荷大小限制 (纯文本 JSON 上限 256KB，杜绝二进制大附件直接灌入 D1)
+      // 1. 载荷大小限制 (纯文本 JSON 上限 256KB，杜绝二进制大附件直接灌入 D1)
       const contentLengthHeader = request.headers.get('content-length')
       if (contentLengthHeader) {
         const cl = Number(contentLengthHeader)
@@ -453,17 +442,61 @@ export default {
       // 区分类型：自动预警 vs 用户手动反馈
       const isAutoAlert = payload.reportType === 'automated_compatibility_alert'
 
-      // 生成唯一反馈流水号：优先采用客户端合法规范的流水号，保证端云四方编号 100% 一致；若缺失或非法则由服务端兜底生成
+      // 提取客户端候选流水号并验证格式规范
+      const clientCandidate = typeof payload.clientFeedbackId === 'string' ? payload.clientFeedbackId.trim() : ''
+      const isWellFormedId = /^(FB|ALERT)-\d{8}-[A-Z0-9]{4,16}$/.test(clientCandidate)
+
+      // 2. 幂等优先安全检查：对已经存在、合法且与原请求匹配的 clientFeedbackId，允许安全返回已有状态
+      // 避免同一公网 IP 达到限额后，已落库的反馈重试被 429 误伤拦截
+      if (isWellFormedId) {
+        try {
+          const existingFb = await env.DB.prepare(
+            'SELECT id, category, client_ip, status, github_issue_number, github_issue_url, created_at FROM feedback WHERE id = ?'
+          )
+            .bind(clientCandidate)
+            .first<{
+              id: string
+              category: string
+              client_ip: string | null
+              status: string
+              github_issue_number: number | null
+              github_issue_url: string | null
+              created_at: string
+            }>()
+
+          if (existingFb) {
+            // 反枚举与反滥用防护：必须与原记录分类一致，且来源 IP 匹配（或原记录为 unknown）
+            const ipMatches = !existingFb.client_ip || existingFb.client_ip === 'unknown' || existingFb.client_ip === clientIp
+            const categoryMatches = existingFb.category === payload.category
+
+            if (ipMatches && categoryMatches) {
+              return buildFeedbackResponse(existingFb, true)
+            }
+          }
+        } catch (idempErr) {
+          console.warn('Idempotency query warning:', idempErr)
+        }
+      }
+
+      // 3. 新反馈提交或未匹配记录：严格执行 D1 持久化 IP 频控防御 (10 分钟最多 5 次)
+      if (await checkD1RateLimit(env.DB, clientIp, 5, 10 * 60 * 1000)) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            message: '提交太频繁，请稍候再试（10 分钟内最多提交 5 次）'
+          }),
+          { status: 429, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+        )
+      }
+
+      // 生成唯一反馈流水号：若客户端已提供合法流水号则采用，否则服务端兜底生成
       const now = new Date()
       const yyyy = now.getUTCFullYear()
       const mm = String(now.getUTCMonth() + 1).padStart(2, '0')
       const dd = String(now.getUTCDate()).padStart(2, '0')
       const rand = Math.random().toString(36).substring(2, 8).toUpperCase()
       const defaultFeedbackId = `${isAutoAlert ? 'ALERT' : 'FB'}-${yyyy}${mm}${dd}-${rand}`
-      const clientCandidate = typeof payload.clientFeedbackId === 'string' ? payload.clientFeedbackId.trim() : ''
-      const feedbackId = /^(FB|ALERT)-\d{8}-[A-Z0-9]{4,16}$/.test(clientCandidate)
-        ? clientCandidate
-        : defaultFeedbackId
+      const feedbackId = isWellFormedId ? clientCandidate : defaultFeedbackId
 
       // 服务端二次安全脱敏
       const safeDescription = sanitizeText(payload.description.trim())
@@ -471,28 +504,7 @@ export default {
       const safeContact = payload.contact ? sanitizeText(payload.contact.trim()) : null
       const fingerprint = payload.diagnosticsSummary?.errorFingerprint
 
-      // 2.5 幂等重试校验：若反馈流水号已在 D1 中存在，说明此前请求已在服务端成功落库（客户端因网络抖动或超时未收到 ACK）
-      try {
-        const existingFb = await env.DB.prepare(
-          'SELECT id, status, github_issue_number, github_issue_url, created_at FROM feedback WHERE id = ?'
-        )
-          .bind(feedbackId)
-          .first<{
-            id: string
-            status: string
-            github_issue_number: number | null
-            github_issue_url: string | null
-            created_at: string
-          }>()
-
-        if (existingFb) {
-          return buildFeedbackResponse(existingFb, true)
-        }
-      } catch (idempErr) {
-        console.warn('Idempotency query warning:', idempErr)
-      }
-
-      // 3. 写入 D1 反馈记录表 (事务性保证，捕获并发唯一键冲突)
+      // 4. 写入 D1 反馈记录表 (事务性保证，捕获并发唯一键冲突)
       try {
         await env.DB.prepare(`
           INSERT INTO feedback (
