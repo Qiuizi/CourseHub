@@ -58,7 +58,7 @@ CourseHub v0.4.3 Beta 2 是针对首批真实用户反馈排查推出的候选�
 
 | 文件名 | 大小 | SHA-256 |
 | :--- | :--- | :--- |
-| `CourseHub-Setup-0.4.3-beta.2-x64.exe` | 待生成 | 待填入 |
-| `CourseHub-Setup-0.4.3-beta.2-x64.exe.sha256` | 104 B | 待填入 |
+| `CourseHub-Setup-0.4.3-beta.2-x64.exe` | 106.99 MB | `8953f334b11e52bd9bc1a840f4c359f0e00807299cb83e09a1b10f817b78c6e4` |
+| `CourseHub-Setup-0.4.3-beta.2-x64.exe.sha256` | 104 B | `8953f334b11e52bd9bc1a840f4c359f0e00807299cb83e09a1b10f817b78c6e4` |
 
 *注：v0.4.1 稳定版及 v0.4.3-beta.1 资产保持原样，未经任何修改。*
