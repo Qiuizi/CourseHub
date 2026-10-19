@@ -30,6 +30,7 @@ import type {
   FeedbackSubmissionResult,
   PlatformHealthReport
 } from '@shared/feedback'
+import type { UpdateState } from '@shared/updater'
 
 export interface PlatformSummary {
   id: PlatformId
@@ -244,6 +245,15 @@ const api = {
     submit: (payload: FeedbackSubmissionPayload) =>
       invoke<FeedbackSubmissionResult>('feedback:submit', payload)
   },
+  updater: {
+    check: (manual?: boolean) => invoke<UpdateState>('updater:check', { manual }),
+    download: () => invoke<{ started: boolean }>('updater:download'),
+    install: () => invoke<{ quitting: boolean }>('updater:install'),
+    getState: () => invoke<UpdateState>('updater:get-state'),
+    setInstallOnQuit: (installOnQuit: boolean) =>
+      invoke<{ installOnQuit: boolean }>('updater:set-install-on-quit', { installOnQuit }),
+    openReleasePage: () => invoke<void>('updater:open-release-page')
+  },
   events: {
     onVideoObservation: (cb: (obs: PlaybackObservation) => void): (() => void) => {
       const handler = (_e: unknown, obs: PlaybackObservation): void => cb(obs)
@@ -309,6 +319,11 @@ const api = {
       ): void => cb(evt)
       ipcRenderer.on('classroom:notification-clicked', handler)
       return () => ipcRenderer.removeListener('classroom:notification-clicked', handler)
+    },
+    onUpdateStatus: (cb: (state: UpdateState) => void): (() => void) => {
+      const handler = (_e: unknown, state: UpdateState): void => cb(state)
+      ipcRenderer.on('updater:status', handler)
+      return () => ipcRenderer.removeListener('updater:status', handler)
     }
   }
 }

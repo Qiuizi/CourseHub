@@ -23,6 +23,8 @@ import { GeoScene } from './features/GeoScene'
 import { AiScene } from './features/AiScene'
 import { SettingsScene } from './features/SettingsScene'
 import { CoursesScene, type CourseItem } from './features/CoursesScene'
+import { UpdateDialog } from './components/UpdateDialog'
+import type { UpdateState } from '@shared/updater'
 
 const TEST_TASKS: ChapterTask[] = [
   { id: 'fixture-t1', title: '开场导学（测试素材）', order: 1, durationSeconds: 8, platformStatus: 'unknown' },
@@ -99,6 +101,10 @@ export default function App(): JSX.Element {
   const [theme, setTheme] = useState<'light' | 'dark'>('light')
   const [feedbackPrefill, setFeedbackPrefill] = useState<{ category: FeedbackCategory; description: string } | null>(null)
 
+  const [updateState, setUpdateState] = useState<UpdateState | null>(null)
+  const [updateDialogOpen, setUpdateDialogOpen] = useState(false)
+  const updateDismissedRef = useRef(false)
+
   const [tasks, setTasks] = useState<ChapterTask[]>([])
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
   const [selectedCourseName, setSelectedCourseName] = useState<string | null>(null)
@@ -115,6 +121,33 @@ export default function App(): JSX.Element {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
   }, [theme])
+
+  /* ---------------------------- 自动更新监听 ---------------------------- */
+  useEffect(() => {
+    if (api?.updater?.getState) {
+      void api.updater.getState().then((r) => {
+        if (r.ok) {
+          setUpdateState(r.data)
+          if (r.data.status === 'available' && !updateDismissedRef.current) {
+            setUpdateDialogOpen(true)
+          }
+        }
+      })
+    }
+
+    if (api?.events?.onUpdateStatus) {
+      const unsub = api.events.onUpdateStatus((s) => {
+        setUpdateState(s)
+        if (s.status === 'available' && !updateDismissedRef.current) {
+          setUpdateDialogOpen(true)
+        } else if (s.status === 'downloaded') {
+          setUpdateDialogOpen(true)
+        }
+      })
+      return unsub
+    }
+    return undefined
+  }, [api])
 
   /* ---------------------------- 平台列表 ---------------------------- */
   useEffect(() => {
@@ -1365,6 +1398,7 @@ export default function App(): JSX.Element {
             activePlatform={activeId}
             prefillCategory={feedbackPrefill?.category}
             prefillDescription={feedbackPrefill?.description}
+            onOpenUpdateDialog={() => setUpdateDialogOpen(true)}
           />
         )
 
@@ -1556,6 +1590,64 @@ export default function App(): JSX.Element {
           </button>
         </div>
       )}
+
+      <UpdateDialog
+        state={
+          updateState || {
+            status: 'idle',
+            currentVersion: '0.4.3-beta.3',
+            channel: 'beta',
+            info: null,
+            progress: null,
+            error: null,
+            lastCheckedAt: null,
+            isInstallOnQuit: false
+          }
+        }
+        open={updateDialogOpen}
+        onClose={() => {
+          updateDismissedRef.current = true
+          setUpdateDialogOpen(false)
+        }}
+        onStartDownload={async () => {
+          const res = await api.updater.download()
+          if (!res.ok) {
+            setNotice(`下载启动失败：${res.error.message}`)
+          }
+        }}
+        onInstallNow={async () => {
+          const busy = continuous
+            ? '正在进行连续课程播放，请暂停或结束后再更新'
+            : aiBusy
+              ? 'AI 助教正在回答问题中，请等待生成完毕后再更新'
+              : geoBusy
+                ? '正在进行定位模拟测试，请先停止测试后再更新'
+                : null
+          if (busy) {
+            setNotice(busy)
+            return
+          }
+          const res = await api.updater.install()
+          if (!res.ok) {
+            setNotice(res.error.message)
+          }
+        }}
+        onToggleInstallOnQuit={async (val) => {
+          await api.updater.setInstallOnQuit(val)
+        }}
+        onOpenReleasePage={() => {
+          void api.updater.openReleasePage()
+        }}
+        busyWarning={
+          continuous
+            ? '正在进行连续课程播放，请暂停或结束后再更新'
+            : aiBusy
+              ? 'AI 助教正在回答问题中，请等待生成完毕后再更新'
+              : geoBusy
+                ? '正在进行定位模拟测试，请先停止测试后再更新'
+                : null
+        }
+      />
 
       {aiPrefill && scene === 'ai' && (
         <div style={{ display: 'none' }} data-testid="ai-prefill">

@@ -11,12 +11,18 @@ import {
   ChevronDown,
   ChevronUp,
   Moon,
-  Sun
+  Sun,
+  Download,
+  ExternalLink,
+  Sparkles,
+  CheckCircle2,
+  RotateCw
 } from 'lucide-react'
 import { Card, Notice, Rows, Seg, Switch, CapChip, Empty } from '../components/ui'
 import { isRetiredAlias, KNOWN_MODELS, LEGACY_REFERENCE_MODELS } from '@shared/deepseek'
 import type { AIModelInfo, PlatformId } from '@shared/types'
 import type { FeedbackCategory } from '@shared/feedback'
+import type { UpdateState } from '@shared/updater'
 import { FeedbackCard } from './FeedbackCard'
 
 export interface SettingsSceneProps {
@@ -27,6 +33,7 @@ export interface SettingsSceneProps {
   activePlatform?: PlatformId
   prefillCategory?: FeedbackCategory
   prefillDescription?: string
+  onOpenUpdateDialog?: () => void
 }
 
 /**
@@ -42,7 +49,8 @@ export function SettingsScene({
   onNotify,
   activePlatform = 'chaoxing',
   prefillCategory,
-  prefillDescription
+  prefillDescription,
+  onOpenUpdateDialog
 }: SettingsSceneProps): ReactNode {
   const [key, setKey] = useState('')
   const [showKey, setShowKey] = useState(false)
@@ -54,6 +62,44 @@ export function SettingsScene({
   const [notifications, setNotifications] = useState(true)
 
   const [modelSource, setModelSource] = useState<'online' | 'offline' | null>(null)
+
+  const [updateState, setUpdateState] = useState<UpdateState | null>(null)
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
+
+  useEffect(() => {
+    if (window.coursehub?.updater?.getState) {
+      void window.coursehub.updater.getState().then((res) => {
+        if (res.ok) setUpdateState(res.data)
+      })
+    }
+    if (window.coursehub?.events?.onUpdateStatus) {
+      const unsub = window.coursehub.events.onUpdateStatus((s) => {
+        setUpdateState(s)
+      })
+      return unsub
+    }
+    return undefined
+  }, [])
+
+  const handleCheckUpdate = useCallback(async () => {
+    setCheckingUpdate(true)
+    try {
+      const r = await window.coursehub.updater.check(true)
+      if (r.ok) {
+        setUpdateState(r.data)
+        if (r.data.status === 'not_available') {
+          onNotify(`当前已是最新版本 (v${r.data.currentVersion})`)
+        } else if (r.data.status === 'available') {
+          onNotify(`发现新版本 v${r.data.info?.version}，可在弹窗中查看更新`)
+          onOpenUpdateDialog?.()
+        }
+      } else {
+        onNotify(`检查更新失败：${r.error.message}`)
+      }
+    } finally {
+      setCheckingUpdate(false)
+    }
+  }, [onNotify, onOpenUpdateDialog])
 
   const refreshModels = useCallback(async () => {
     setLoadingModels(true)
@@ -326,6 +372,134 @@ export function SettingsScene({
             </div>
           </div>
           <Switch checked={notifications} onChange={setNotifications} label="应用内通知" />
+        </div>
+      </Card>
+
+      {/* ---------------- 软件更新 ---------------- */}
+      <Card title="软件更新 (CourseHub Update)">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div
+              style={{
+                width: 38,
+                height: 38,
+                borderRadius: 14,
+                background: updateState?.status === 'downloaded' ? 'var(--ch-emerald-50)' : 'var(--ch-accent-tint)',
+                color: updateState?.status === 'downloaded' ? 'var(--ch-emerald-700)' : 'var(--ch-accent)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
+            >
+              {updateState?.status === 'downloaded' ? <CheckCircle2 size={18} /> : <Sparkles size={18} />}
+            </div>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>原生自动更新系统</div>
+              <div style={{ fontSize: 11, color: 'var(--ch-text-2)' }}>
+                官方 GitHub Releases 渠道，与 Stable (v0.4.1) 严格信道隔离
+              </div>
+            </div>
+          </div>
+          <span
+            className={`chip ${
+              updateState?.status === 'available'
+                ? 'chip-tint'
+                : updateState?.status === 'downloaded'
+                  ? 'chip-emerald'
+                  : updateState?.status === 'error'
+                    ? 'chip-neutral'
+                    : 'chip-emerald'
+            }`}
+          >
+            {updateState?.status === 'available'
+              ? `新版 v${updateState.info?.version}`
+              : updateState?.status === 'downloaded'
+                ? '已就绪'
+                : updateState?.status === 'checking'
+                  ? '检测中'
+                  : updateState?.status === 'downloading'
+                    ? `${updateState.progress?.percent || 0}%`
+                    : '已是最新'}
+          </span>
+        </div>
+
+        <Rows
+          items={[
+            { k: '当前版本', v: `v${updateState?.currentVersion || '0.4.3-beta.3'}`, mono: true },
+            { k: '更新渠道', v: updateState?.channel === 'beta' ? 'Beta (公测渠道)' : '正式版' },
+            {
+              k: '上次检查',
+              v: updateState?.lastCheckedAt ? new Date(updateState.lastCheckedAt).toLocaleString() : '未检查'
+            },
+            {
+              k: '更新状态',
+              v:
+                updateState?.status === 'available'
+                  ? `发现新版本 v${updateState.info?.version}（点击下方查看更新详情）`
+                  : updateState?.status === 'downloading'
+                    ? `正在下载更新 (${updateState.progress?.percent || 0}%)`
+                    : updateState?.status === 'downloaded'
+                      ? '更新安装包已下载完成，等待重启生效'
+                      : updateState?.status === 'error'
+                        ? `检查失败: ${updateState.error?.message}`
+                        : '当前已是最新公测版本'
+            }
+          ]}
+        />
+
+        {updateState?.status === 'error' && (
+          <div style={{ marginTop: 12 }}>
+            <Notice tone="error">
+              <strong>{updateState.error?.code}</strong>: {updateState.error?.message}
+            </Notice>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => void handleCheckUpdate()}
+            disabled={checkingUpdate || updateState?.status === 'downloading'}
+            data-testid="settings-check-update"
+          >
+            <RefreshCw size={13} className={checkingUpdate ? 'spin' : undefined} />
+            检查更新
+          </button>
+
+          {updateState?.status === 'available' && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={onOpenUpdateDialog}
+              data-testid="settings-view-update"
+            >
+              <Download size={13} />
+              查看更新并下载
+            </button>
+          )}
+
+          {updateState?.status === 'downloaded' && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={onOpenUpdateDialog}
+              data-testid="settings-install-update"
+            >
+              <RotateCw size={13} />
+              立即重启安装
+            </button>
+          )}
+
+          <button
+            type="button"
+            className="btn"
+            onClick={() => void window.coursehub.updater.openReleasePage()}
+            data-testid="settings-open-releases"
+          >
+            <ExternalLink size={13} />
+            GitHub 发布页
+          </button>
         </div>
       </Card>
 

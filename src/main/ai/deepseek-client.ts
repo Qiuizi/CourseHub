@@ -23,6 +23,10 @@ export class DeepSeekClient {
 
   constructor(private readonly store: Store) {}
 
+  isGenerating(): boolean {
+    return this.activeAbort !== null
+  }
+
   private async apiKey(): Promise<string | null> {
     const fromStore = await this.store.getSecret('deepseek_api_key')
     if (fromStore && fromStore.trim()) return fromStore.trim()

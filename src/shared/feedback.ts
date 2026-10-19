@@ -57,7 +57,7 @@ export type PlatformHealthDetailedState = PlatformHealthState
 /** 结构化诊断事件 */
 export interface DiagnosticEvent {
   ts: string
-  module: 'chaoxing' | 'yuketang' | 'renderer' | 'main' | 'video' | 'ai' | 'geo' | 'classroom' | 'system'
+  module: 'chaoxing' | 'yuketang' | 'renderer' | 'main' | 'video' | 'ai' | 'geo' | 'classroom' | 'system' | 'updater'
   platform?: PlatformId
   level: 'info' | 'warn' | 'error'
   type: string

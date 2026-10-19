@@ -40,6 +40,7 @@ import { PlayerObserver, commandPlayer } from '../video/player-observer'
 import { ContinuousManager } from '../video/continuous-manager'
 import { inspectChapterInWebContents } from '../video/task-inspector'
 import { DeepSeekClient } from '../ai/deepseek-client'
+import { AppUpdateManager } from '../services/updater'
 import {
   extractQuestions,
   previewTestAction,
@@ -535,13 +536,33 @@ export async function handleFeedbackSubmit(
   }
 }
 
-export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () => void } {
+export function registerIpc(deps: IpcDeps): {
+  ai: DeepSeekClient
+  updateManager: AppUpdateManager
+  dispose: () => void
+} {
   const ai = new DeepSeekClient(deps.store)
   const observers = new Map<string, PlayerObserver>()
   const continuousManager = new ContinuousManager({
     store: deps.store,
     getWindow: deps.getWindow,
     getWebContents: (platformId) => deps.browsers.get(platformId)?.webContents ?? null
+  })
+  const updateManager = new AppUpdateManager({
+    store: deps.store,
+    getWindow: deps.getWindow,
+    isBusy: () => {
+      if (continuousManager.getState().state !== 'idle') {
+        return { busy: true, reason: '正在进行连续课程播放，请暂停或结束后再更新' }
+      }
+      if (ai.isGenerating()) {
+        return { busy: true, reason: 'AI 助教正在回答问题中，请等待生成完毕后再更新' }
+      }
+      if (deps.geo?.isActive()) {
+        return { busy: true, reason: '正在进行定位模拟测试，请先停止测试后再更新' }
+      }
+      return { busy: false }
+    }
   })
   const notificationManager = new ClassroomNotificationManager({
     store: deps.store,
@@ -1978,8 +1999,38 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     return await handleFeedbackSubmit(payload, deps)
   })
 
+  /* ------------------------------- 自动更新 ------------------------------- */
+
+  handle('updater:check', async (_e, payload?: unknown) => {
+    const p = payload as { manual?: boolean } | undefined
+    return await updateManager.checkForUpdates(p?.manual ?? false)
+  })
+
+  handle('updater:download', async () => {
+    return await updateManager.downloadUpdate()
+  })
+
+  handle('updater:install', async () => {
+    return await updateManager.installUpdate()
+  })
+
+  handle('updater:get-state', async () => {
+    return ok(updateManager.getState())
+  })
+
+  handle('updater:set-install-on-quit', async (_e, payload?: unknown) => {
+    const p = payload as { installOnQuit?: boolean } | undefined
+    return updateManager.setInstallOnQuit(p?.installOnQuit ?? false)
+  })
+
+  handle('updater:open-release-page', async () => {
+    updateManager.openReleasePage()
+    return ok(null)
+  })
+
   return {
     ai,
+    updateManager,
     dispose: () => {
       for (const o of observers.values()) o.stop()
       observers.clear()

@@ -31,6 +31,10 @@ export class GeoTestManager {
 
   constructor(private readonly events: GeoTestManagerEvents) {}
 
+  isActive(): boolean {
+    return this.current?.status === 'active'
+  }
+
   private emit(patch: Partial<GeoTestRun>): void {
     if (!this.current) return
     this.current = { ...this.current, ...patch }

@@ -19,7 +19,7 @@ let mainWindow: BrowserWindow | null = null
 let store: Store | null = null
 let geo: GeoTestManager | null = null
 let testbedServer: TestbedServer | null = null
-let ipcHandle: { dispose: () => void } | null = null
+let ipcHandle: ReturnType<typeof registerIpc> | null = null
 const browsers = new Map<PlatformId, PlatformBrowser>()
 
 // Beta 环境隔离保护：防止覆盖正式版 v0.4.1 的用户配置、Session Cookie 与单实例锁
@@ -189,6 +189,11 @@ function bootstrap(): void {
   })
 
   void store.log('info', 'app_start', { version: app.getVersion() })
+
+  // 启动后异步静默检测更新：延迟 5 秒触发，绝不阻塞应用初始化与首屏渲染
+  setTimeout(() => {
+    void ipcHandle?.updateManager.checkForUpdates(false)
+  }, 5000)
 }
 
 app.whenReady().then(() => {

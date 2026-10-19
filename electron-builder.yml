@@ -20,9 +20,14 @@ extraResources:
 
 asar: true
 
-# 首版不做自动更新，也不远程发布。显式声明空 publish 目标，
-# 避免 electron-builder 因缺少 git 仓库而在 updateInfo 阶段报错。
-publish: null
+# 自动更新发布源：GitHub Releases (Qiuizi/CourseHub)
+# 仅从官方公开 Release 获取更新，不内置任何私有凭据，严格限制发布渠道
+publish:
+  provider: github
+  owner: Qiuizi
+  repo: CourseHub
+  releaseType: prerelease
+  channel: beta
 
 npmRebuild: false
 
