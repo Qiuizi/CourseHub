@@ -13,8 +13,16 @@ import {
   RefreshCw
 } from 'lucide-react'
 import type { GeoTestRun, GeoCoordinateSystem } from '@shared/types'
-import { validateGeoPoint, gcj02ToWgs84Approx, haversineMeters, GCJ02_MAX_OFFSET_METERS } from '@shared/geo'
+import {
+  validateGeoPoint,
+  gcj02ToWgs84Approx,
+  haversineMeters,
+  GCJ02_MAX_OFFSET_METERS,
+  isValidCustomTileUrl
+} from '@shared/geo'
 import { Card, Notice, Rows, Seg, CapChip } from '../components/ui'
+
+export { isValidCustomTileUrl }
 
 export interface TileProvider {
   id: string
@@ -24,7 +32,7 @@ export interface TileProvider {
   subdomains?: string[]
 }
 
-/** 瓦片源：默认首选 OpenStreetMap 官方（免 Key 合规），备选 CARTO 浅色（需 API Key）与自定义源 */
+/** 瓦片源：默认首选 OpenStreetMap 官方（免 Key 合规），备选 CARTO 浅色（需有效 API Key）与自定义源 */
 export const TILE_PROVIDERS: TileProvider[] = [
   {
     id: 'osm_standard',
@@ -34,14 +42,14 @@ export const TILE_PROVIDERS: TileProvider[] = [
   },
   {
     id: 'carto_light',
-    name: 'CARTO 浅色 (需 API Key / 无 Key 含水印)',
+    name: 'CARTO 浅色 (需 API Key)',
     url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
     attribution: '&copy; <a href="https://carto.com/attributions" target="_blank" rel="noreferrer">CARTO</a>, &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors',
     subdomains: ['a', 'b', 'c', 'd']
   },
   {
     id: 'custom',
-    name: '自定义瓦片 URL',
+    name: '自定义瓦片 URL (需 HTTPS)',
     url: '',
     attribution: '自定义地图图源'
   }
@@ -142,11 +150,20 @@ export function GeoScene({ run, busy, onStart, onStop }: GeoSceneProps): ReactNo
       let urlPattern = provider.url
       if (provider.id === 'carto_light') {
         const trimmedKey = currentCartoKey.trim()
-        if (trimmedKey) {
-          urlPattern = `${provider.url}?key=${encodeURIComponent(trimmedKey)}`
+        if (!trimmedKey) {
+          // 未配置 Key 时不发起无 Key 请求，避免官方水印或 401/403
+          setTilesFailed(false)
+          return
         }
+        urlPattern = `${provider.url}?key=${encodeURIComponent(trimmedKey)}`
       } else if (provider.id === 'custom') {
-        urlPattern = currentCustomUrl.trim() || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+        const trimmedCustom = currentCustomUrl.trim()
+        if (!isValidCustomTileUrl(trimmedCustom)) {
+          // 自定义 URL 不合法时不挂载瓦片，提示用户输入合规 https 模板
+          setTilesFailed(false)
+          return
+        }
+        urlPattern = trimmedCustom
       }
 
       const layer = L.tileLayer(urlPattern, {
@@ -157,19 +174,20 @@ export function GeoScene({ run, busy, onStart, onStop }: GeoSceneProps): ReactNo
 
       layer.on('tileerror', () => {
         setTilesFailed(true)
-        // 防抖记录安全诊断事件，不污染或影响平台状态机
-        if (errorLoggedRef.current !== `${provider.id}:${urlPattern}`) {
-          errorLoggedRef.current = `${provider.id}:${urlPattern}`
+        // 防抖记录安全诊断事件，严格脱敏 query 凭证（包括 key=[REDACTED]），不污染或影响平台状态机
+        const safeUrlPattern = urlPattern.replace(/([?&]key=)[^&#]+/gi, '$1[REDACTED]')
+        if (errorLoggedRef.current !== `${provider.id}:${safeUrlPattern}`) {
+          errorLoggedRef.current = `${provider.id}:${safeUrlPattern}`
           void window.coursehub.diagnostics
             .recordError({
               module: 'geo',
               type: 'map_tile_error',
               code: 'MAP_TILE_LOAD_ERROR',
-              summary: `地图瓦片加载失败 (${provider.name})，可能由于国内网络受阻或连接超时`,
+              summary: `地图瓦片加载失败 (${provider.name})，可能由于当前网络环境无法直连瓦片服务器`,
               platform: undefined,
               data: {
                 providerId: provider.id,
-                urlPattern
+                urlPattern: safeUrlPattern
               }
             })
             .catch(() => {})
@@ -352,19 +370,19 @@ export function GeoScene({ run, busy, onStart, onStop }: GeoSceneProps): ReactNo
             <div
               style={{
                 marginTop: 8,
-                padding: '6px 10px',
+                padding: '8px 12px',
                 background: 'var(--ch-subtle)',
                 borderRadius: 6,
                 fontSize: 11,
                 display: 'flex',
                 flexDirection: 'column',
-                gap: 4
+                gap: 6
               }}
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
                 <span style={{ fontWeight: 600 }}>CARTO API Key:</span>
                 <span style={{ fontSize: 10.5, color: 'var(--ch-text-3)' }}>
-                  无 Key 含斜向官方水印。可前往{' '}
+                  CARTO 自 2026 年起需配置 Key 激活。可前往{' '}
                   <a
                     href="https://carto.com/basemaps/apikey/"
                     target="_blank"
@@ -380,7 +398,7 @@ export function GeoScene({ run, busy, onStart, onStop }: GeoSceneProps): ReactNo
                 <input
                   className="field"
                   style={{ fontSize: 11, height: 26, flex: 1 }}
-                  placeholder="粘贴 CARTO API Key (可选)"
+                  placeholder="粘贴 CARTO API Key 后点击「应用」"
                   value={cartoApiKey}
                   onChange={(e) => {
                     const val = e.target.value
@@ -402,6 +420,11 @@ export function GeoScene({ run, busy, onStart, onStop }: GeoSceneProps): ReactNo
                   应用
                 </button>
               </div>
+              {!cartoApiKey.trim() && (
+                <div style={{ fontSize: 10.5, color: 'var(--ch-warning)', lineHeight: 1.4 }}>
+                  ℹ️ 当前尚未配置 CARTO Key，为遵循服务条款并避免水印干扰，暂未加载底图。输入 Key 并点击应用后即可加载。
+                </div>
+              )}
             </div>
           )}
 
@@ -409,16 +432,21 @@ export function GeoScene({ run, busy, onStart, onStop }: GeoSceneProps): ReactNo
             <div
               style={{
                 marginTop: 8,
-                padding: '6px 10px',
+                padding: '8px 12px',
                 background: 'var(--ch-subtle)',
                 borderRadius: 6,
                 fontSize: 11,
                 display: 'flex',
                 flexDirection: 'column',
-                gap: 4
+                gap: 6
               }}
             >
-              <span style={{ fontWeight: 600 }}>自定义瓦片 URL 模板:</span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+                <span style={{ fontWeight: 600 }}>自定义瓦片 URL 模板:</span>
+                <span style={{ fontSize: 10.5, color: 'var(--ch-text-3)' }}>
+                  需包含 {'{z}'}、{'{x}'}、{'{y}'} 占位符且必须为 https:// 协议
+                </span>
+              </div>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                 <input
                   className="field"
@@ -445,6 +473,11 @@ export function GeoScene({ run, busy, onStart, onStop }: GeoSceneProps): ReactNo
                   应用
                 </button>
               </div>
+              {customTileUrl.trim() && !isValidCustomTileUrl(customTileUrl) && (
+                <div style={{ fontSize: 10.5, color: 'var(--ch-danger)', lineHeight: 1.4 }}>
+                  ⚠️ 自定义瓦片 URL 必须是以 https:// 开头的合法模板，且必须包含 {'{z}'}、{'{x}'}、{'{y}'} 占位符。
+                </div>
+              )}
             </div>
           )}
 
@@ -454,15 +487,15 @@ export function GeoScene({ run, busy, onStart, onStop }: GeoSceneProps): ReactNo
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   <div style={{ fontWeight: 600 }}>⚠️ 地图底图瓦片加载受阻（当前网络环境可能无法直连瓦片服务器）</div>
                   <div style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--ch-text-2)' }}>
-                    <strong>【核心功能不受影响】</strong>：Web Geolocation 经纬度覆盖、页面真实读回与偏差核验<strong>完全正常工作</strong>。
+                    <strong>【核心测试不受影响】</strong>：Web Geolocation 经纬度覆盖、测试页面真实读回与偏差核验<strong>完全正常工作</strong>。
                   </div>
                   <div style={{ fontSize: 11, lineHeight: 1.5 }}>
-                    你可以：
+                    建议排查或操作：
                     <ul style={{ margin: '4px 0 4px 16px', padding: 0 }}>
-                      <li>直接在右侧面板手动输入经纬度数值执行测试；</li>
-                      <li>在地图空白网格中依然可以点选或拖动蓝色图钉选取坐标；</li>
-                      <li>点击右上角<strong>「重试」</strong>重新请求瓦片；</li>
-                      <li>切换图源为「CARTO 浅色」（可选填免费 Key）或自定义瓦片源。</li>
+                      <li><strong>手动输入坐标</strong>：直接在右侧「目标坐标」输入框中输入经纬度数值执行测试；</li>
+                      <li><strong>空白网格选点</strong>：在地图空白网格中依然可以点选或拖动蓝色图钉选取坐标；</li>
+                      <li><strong>重试网络</strong>：点击右上角<strong>「重试」</strong>按钮重新请求瓦片；</li>
+                      <li><strong>备用图源</strong>：配置免费 CARTO API Key（carto.com/basemaps/apikey）切换图源，或使用可信的自定义 HTTPS 瓦片源。</li>
                     </ul>
                   </div>
                 </div>

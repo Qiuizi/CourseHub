@@ -128,3 +128,18 @@ export function haversineMeters(
     Math.sin(dLat / 2) ** 2 + Math.sin(dLon / 2) ** 2 * Math.cos(lat1) * Math.cos(lat2)
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)))
 }
+
+/** 严格校验自定义瓦片 URL 模板：必须为 https:// 协议且包含 {z}、{x}、{y} 占位符 */
+export function isValidCustomTileUrl(url: string): boolean {
+  if (!url || typeof url !== 'string') return false
+  const trimmed = url.trim()
+  if (!trimmed.startsWith('https://')) return false
+  try {
+    const dummy = trimmed.replace(/\{[a-z0-9_]+\}/gi, '0')
+    const parsed = new URL(dummy)
+    if (parsed.protocol !== 'https:') return false
+  } catch {
+    return false
+  }
+  return trimmed.includes('{z}') && trimmed.includes('{x}') && trimmed.includes('{y}')
+}

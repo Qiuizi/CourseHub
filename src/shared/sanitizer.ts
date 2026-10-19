@@ -72,9 +72,9 @@ export class Sanitizer {
     { reg: /[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+/g, rep: '[EMAIL_REDACTED]' },
     // 7. Windows 绝对路径中的个人用户名 (C:\Users\张三\... -> C:\Users\[USER_HOME]\...)
     { reg: /([a-zA-Z]:\\Users\\)[^\\]+(\\.*)/gi, rep: '$1[USER_HOME]$2' },
-    // 8. 常见个人敏感、身份与凭据参数 (如 ?cpi=123, &token=abc, token=xyz, password=123)
+    // 8. 常见个人敏感、身份与凭据参数 (如 ?cpi=123, &token=abc, token=xyz, password=123, key=carto_key)
     {
-      reg: /(?<=[?&\s,;:]|^)(cpi|enc|token|ticket|password|passwd|pwd|sessionid|jsessionid|phpsessid|uid|studentno|studentid|clazzid|courseid|access_token|refresh_token|auth|secret|apikey|api_key)\s*=\s*[^&#\s,;]+/gi,
+      reg: /(?<=[?&\s,;:]|^)(cpi|enc|token|ticket|password|passwd|pwd|sessionid|jsessionid|phpsessid|uid|studentno|studentid|clazzid|courseid|access_token|refresh_token|auth|secret|apikey|api_key|key)\s*=\s*[^&#\s,;]+/gi,
       rep: '$1=[REDACTED_PARAM]'
     }
   ]

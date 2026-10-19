@@ -74,7 +74,57 @@ export function sanitizeText(input: string): string {
     .replace(/(?<!\d)([1-9]\d{5}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx])(?!\d)/g, '[IDCARD_REDACTED]')
     .replace(/[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+/g, '[EMAIL_REDACTED]')
     .replace(/([a-zA-Z]:\\Users\\)[^\\]+(\\.*)/gi, '$1[USER_HOME]$2')
-    .replace(/(?<=[?&\s,;:]|^)(cpi|enc|token|ticket|password|passwd|pwd|sessionid|jsessionid|phpsessid|uid|studentno|studentid|clazzid|courseid|access_token|refresh_token|auth|secret|apikey|api_key)\s*=\s*[^&#\s,;]+/gi, '$1=[REDACTED_PARAM]')
+    .replace(/(?<=[?&\s,;:]|^)(cpi|enc|token|ticket|password|passwd|pwd|sessionid|jsessionid|phpsessid|uid|studentno|studentid|clazzid|courseid|access_token|refresh_token|auth|secret|apikey|api_key|key)\s*=\s*[^&#\s,;]+/gi, '$1=[REDACTED_PARAM]')
+}
+
+/**
+ * 构造统一且向后兼容的反馈响应，明确区分“D1 已落库排队同步”与“GitHub Issue 已完成创建”
+ */
+export function buildFeedbackResponse(
+  fb: {
+    id: string
+    status: string
+    github_issue_number?: number | null
+    github_issue_url?: string | null
+    created_at?: string
+  },
+  isIdempotent = false
+): Response {
+  const hasIssue = typeof fb.github_issue_number === 'number' && fb.github_issue_number > 0
+  const isAutoAlert = fb.id.startsWith('ALERT-')
+
+  let message: string
+  if (isIdempotent) {
+    if (hasIssue) {
+      message = `${isAutoAlert ? '预警' : '反馈'}早前已成功接收并已关联 GitHub Issue #${fb.github_issue_number}（已幂等去重）`
+    } else {
+      message = `${isAutoAlert ? '预警' : '反馈'}早前已于云端数据库成功落库，后台正在排队同步至问题追踪库（已幂等去重）`
+    }
+  } else {
+    if (hasIssue) {
+      message = `${isAutoAlert ? '兼容性预警' : '反馈'}已成功提交并同步至 GitHub Issue #${fb.github_issue_number}！感谢支持。`
+    } else {
+      message = `${isAutoAlert ? '兼容性预警' : '反馈'}已成功记录至数据库，后台排队同步中！维护者将尽快排查处理。`
+    }
+  }
+
+  return new Response(
+    JSON.stringify({
+      success: true,
+      feedbackId: fb.id,
+      reportType: isAutoAlert ? 'automated_compatibility_alert' : 'user_manual_feedback',
+      message,
+      issueNumber: hasIssue ? fb.github_issue_number : undefined,
+      issueUrl: hasIssue ? fb.github_issue_url || undefined : undefined,
+      syncedToGitHub: hasIssue,
+      syncState: hasIssue ? 'completed' : 'pending',
+      idempotent: isIdempotent
+    }),
+    {
+      status: 200,
+      headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+    }
+  )
 }
 
 /**
@@ -436,23 +486,13 @@ export default {
           }>()
 
         if (existingFb) {
-          return new Response(
-            JSON.stringify({
-              success: true,
-              feedbackId: existingFb.id,
-              message: '反馈早前已成功接收（已幂等去重，无需重复创建）',
-              issueNumber: existingFb.github_issue_number || undefined,
-              issueUrl: existingFb.github_issue_url || undefined,
-              idempotent: true
-            }),
-            { status: 200, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
-          )
+          return buildFeedbackResponse(existingFb, true)
         }
       } catch (idempErr) {
         console.warn('Idempotency query warning:', idempErr)
       }
 
-      // 3. 写入 D1 反馈记录表 (事务性保证)
+      // 3. 写入 D1 反馈记录表 (事务性保证，捕获并发唯一键冲突)
       try {
         await env.DB.prepare(`
           INSERT INTO feedback (
@@ -474,7 +514,24 @@ export default {
           now.toISOString(),
           now.getTime()
         ).run()
-      } catch (dbErr) {
+      } catch (dbErr: unknown) {
+        const errStr = String((dbErr as { message?: string })?.message || dbErr)
+        // 捕获并发冲突 (UNIQUE constraint failed: feedback.id)
+        if (errStr.includes('UNIQUE constraint failed') || errStr.includes('constraint')) {
+          console.warn(`Concurrent race detected for feedbackId ${feedbackId}, resolving existing record`)
+          const concurrentFb = await env.DB.prepare(
+            'SELECT id, status, github_issue_number, github_issue_url, created_at FROM feedback WHERE id = ?'
+          ).bind(feedbackId).first<{
+            id: string
+            status: string
+            github_issue_number: number | null
+            github_issue_url: string | null
+            created_at: string
+          }>()
+          if (concurrentFb) {
+            return buildFeedbackResponse(concurrentFb, true)
+          }
+        }
         console.error('Failed to insert feedback into D1:', dbErr)
         return new Response(
           JSON.stringify({ success: false, message: '写入数据库失败，请稍后重试' }),
@@ -675,22 +732,14 @@ export default {
       // 触发 30 天数据自动清理（不阻塞主请求返回）
       autoCleanup30Days(env.DB).catch(() => {})
 
-      return new Response(
-        JSON.stringify({
-          success: true,
-          feedbackId,
-          reportType: isAutoAlert ? 'automated_compatibility_alert' : 'user_manual_feedback',
-          message: issueUrl
-            ? `${isAutoAlert ? '兼容性预警' : '反馈'}已成功提交并同步至问题跟踪系统！感谢您的支持。`
-            : `${isAutoAlert ? '兼容性预警' : '反馈'}已成功记录至数据库！维护者将尽快排查处理。`,
-          issueNumber,
-          issueUrl,
-          syncedToGitHub: syncStatus === 'synced_gh'
-        }),
+      return buildFeedbackResponse(
         {
-          status: 200,
-          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
-        }
+          id: feedbackId,
+          status: syncStatus,
+          github_issue_number: issueNumber,
+          github_issue_url: issueUrl
+        },
+        false
       )
     }
 

@@ -7,7 +7,8 @@ import {
   validateGeoPoint,
   gcj02ToWgs84Approx,
   haversineMeters,
-  GCJ02_MAX_OFFSET_METERS
+  GCJ02_MAX_OFFSET_METERS,
+  isValidCustomTileUrl
 } from '@shared/geo'
 
 describe('validateGeoPoint', () => {
@@ -102,3 +103,27 @@ describe('haversineMeters', () => {
     expect(d).toBeLessThan(20_100_000)
   })
 })
+
+describe('isValidCustomTileUrl', () => {
+  it('接受合法且安全的 HTTPS 瓦片 URL 模板', () => {
+    expect(isValidCustomTileUrl('https://tile.openstreetmap.org/{z}/{x}/{y}.png')).toBe(true)
+    expect(isValidCustomTileUrl('https://my-cdn.com/maps/{z}/{x}/{y}?token=abc')).toBe(true)
+  })
+
+  it('拒绝非 HTTPS 协议 (http, file, data, javascript 等)', () => {
+    expect(isValidCustomTileUrl('http://insecure.com/tiles/{z}/{x}/{y}.png')).toBe(false)
+    expect(isValidCustomTileUrl('file:///C:/tiles/{z}/{x}/{y}.png')).toBe(false)
+    expect(isValidCustomTileUrl('data:text/html,{z}{x}{y}')).toBe(false)
+    expect(isValidCustomTileUrl('javascript:alert(1)')).toBe(false)
+  })
+
+  it('拒绝缺少 {z}、{x} 或 {y} 占位符的非法 URL', () => {
+    expect(isValidCustomTileUrl('https://example.com/tiles/{z}/{x}.png')).toBe(false)
+    expect(isValidCustomTileUrl('https://example.com/tiles/{x}/{y}.png')).toBe(false)
+    expect(isValidCustomTileUrl('https://example.com/tiles/{z}/{y}.png')).toBe(false)
+    expect(isValidCustomTileUrl('https://example.com/tiles/plain.png')).toBe(false)
+    expect(isValidCustomTileUrl('')).toBe(false)
+    expect(isValidCustomTileUrl(null as any)).toBe(false)
+  })
+})
+

@@ -59,6 +59,9 @@ describe('Cloudflare Worker + D1 免费方案安全与业务测试 (worker-secur
               if (row) row.count += 1
             } else if (query.includes('INSERT INTO feedback')) {
               const id = boundValues[0] as string
+              if (mockFeedbackTable.has(id)) {
+                throw new Error('UNIQUE constraint failed: feedback.id')
+              }
               mockFeedbackTable.set(id, {
                 id,
                 category: boundValues[1],
@@ -688,6 +691,50 @@ describe('Cloudflare Worker + D1 免费方案安全与业务测试 (worker-secur
     expect(json2.feedbackId).toBe('FB-20261019-IDEMP01')
     expect(json2.idempotent).toBe(true)
     // 确认没有再次发起 GitHub Issue API 请求，实现严格幂等
+    expect(githubCallCount).toBe(1)
+  })
+
+  it('14. 并发竞态安全测试：两个并发请求携带相同 clientFeedbackId 同时触发 INSERT 时，UNIQUE 冲突被捕获并幂等返回', async () => {
+    let githubCallCount = 0
+    globalThis.fetch = vi.fn(async () => {
+      githubCallCount++
+      return new Response(JSON.stringify({ number: 777, html_url: 'https://github.com/mock/issue/777' }), { status: 201 })
+    })
+
+    const payload = {
+      clientFeedbackId: 'FB-20261019-RACE01',
+      category: 'login',
+      description: '并发双请求提交测试',
+      systemInfo: { appVersion: '0.4.3', os: 'Windows 11', timestamp: Date.now() }
+    }
+
+    const reqA = new Request('https://worker.local/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': '2.2.2.2' },
+      body: JSON.stringify(payload)
+    })
+    const reqB = new Request('https://worker.local/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': '2.2.2.2' },
+      body: JSON.stringify(payload)
+    })
+
+    // 并发同时执行
+    const [resA, resB] = await Promise.all([
+      worker.fetch(reqA, mockEnv),
+      worker.fetch(reqB, mockEnv)
+    ])
+
+    const jsonA = (await resA.json()) as any
+    const jsonB = (await resB.json()) as any
+
+    expect(resA.status).toBe(200)
+    expect(resB.status).toBe(200)
+    expect(jsonA.success).toBe(true)
+    expect(jsonB.success).toBe(true)
+    expect(jsonA.feedbackId).toBe('FB-20261019-RACE01')
+    expect(jsonB.feedbackId).toBe('FB-20261019-RACE01')
+    // 仅建单一次
     expect(githubCallCount).toBe(1)
   })
 })
