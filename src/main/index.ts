@@ -22,6 +22,17 @@ let testbedServer: TestbedServer | null = null
 let ipcHandle: { dispose: () => void } | null = null
 const browsers = new Map<PlatformId, PlatformBrowser>()
 
+// Beta 环境隔离保护：防止覆盖正式版 v0.4.1 的用户配置、Session Cookie 与单实例锁
+const isBeta =
+  (typeof app?.getVersion === 'function' && app.getVersion().includes('beta')) ||
+  process.env.COURSEHUB_CHANNEL === 'beta'
+
+if (isBeta && typeof app?.getPath === 'function' && typeof app?.setPath === 'function') {
+  app.name = 'CourseHub Beta'
+  const customUserData = path.join(app.getPath('appData'), 'CourseHub-Beta')
+  app.setPath('userData', customUserData)
+}
+
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   console.warn('[CourseHub] Another instance is already running. Forwarding activation and exiting.')

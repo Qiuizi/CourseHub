@@ -1113,6 +1113,7 @@ export default function App(): JSX.Element {
                     key={p.id}
                     type="button"
                     className="platform-pill"
+                    data-platform={p.id}
                     aria-current={p.id === activeId}
                     style={{ padding: '3px 10px', fontSize: 11 }}
                     onClick={() => {

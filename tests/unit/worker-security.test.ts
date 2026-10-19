@@ -41,6 +41,11 @@ describe('Cloudflare Worker + D1 免费方案安全与业务测试 (worker-secur
               const row = mockFingerprintsTable.get(`${fp}:${cat}`)
               return (row || null) as unknown as T
             }
+            if (query.includes('FROM feedback WHERE id = ?')) {
+              const fid = boundValues[0] as string
+              const row = mockFeedbackTable.get(fid)
+              return (row || null) as unknown as T
+            }
             return null
           },
           async run<T = unknown>() {
@@ -68,6 +73,34 @@ describe('Cloudflare Worker + D1 免费方案安全与业务测试 (worker-secur
                 created_at: boundValues[10],
                 created_timestamp: boundValues[11]
               })
+            } else if (query.includes('INSERT INTO error_fingerprints')) {
+              const fp = boundValues[0] as string
+              const cat = boundValues[1] as string
+              const key = `${fp}:${cat}`
+              if (mockFingerprintsTable.has(key)) {
+                throw new Error('UNIQUE constraint failed: error_fingerprints.fingerprint, error_fingerprints.category')
+              }
+              mockFingerprintsTable.set(key, {
+                fingerprint: fp,
+                category: cat,
+                issue_number: boundValues[2],
+                issue_url: boundValues[3],
+                report_count: 1,
+                first_seen_at: boundValues[4],
+                last_seen_at: boundValues[5]
+              })
+            } else if (query.includes('UPDATE error_fingerprints SET issue_number = ?')) {
+              const issueNumber = boundValues[0] as number
+              const issueUrl = boundValues[1] as string
+              const lastSeen = boundValues[2] as string
+              const fp = boundValues[3] as string
+              const cat = boundValues[4] as string
+              const row = mockFingerprintsTable.get(`${fp}:${cat}`)
+              if (row) {
+                row.issue_number = issueNumber
+                row.issue_url = issueUrl
+                row.last_seen_at = lastSeen
+              }
             } else if (query.includes('INSERT OR REPLACE INTO error_fingerprints')) {
               const fp = boundValues[0] as string
               const cat = boundValues[1] as string
@@ -92,11 +125,13 @@ describe('Cloudflare Worker + D1 免费方案安全与业务测试 (worker-secur
             } else if (query.includes('INSERT OR REPLACE INTO github_sync_jobs')) {
               const fid = boundValues[0] as string
               mockSyncJobsTable.set(fid, {
+                id: mockSyncJobsTable.size + 1,
                 feedback_id: fid,
                 action: boundValues[1],
                 fingerprint: boundValues[2],
                 status: 'pending',
-                last_error: boundValues[3]
+                last_error: boundValues[3],
+                retry_count: 0
               })
             } else if (query.includes('UPDATE feedback SET status = ?')) {
               const fid = boundValues[3] as string
@@ -106,10 +141,42 @@ describe('Cloudflare Worker + D1 免费方案安全与业务测试 (worker-secur
                 row.github_issue_number = boundValues[1]
                 row.github_issue_url = boundValues[2]
               }
+            } else if (query.includes('DELETE FROM feedback WHERE created_timestamp < ?')) {
+              const threshold = boundValues[0] as number
+              for (const [k, v] of mockFeedbackTable.entries()) {
+                if (Number(v.created_timestamp) < threshold) {
+                  mockFeedbackTable.delete(k)
+                }
+              }
+            } else if (query.includes('DELETE FROM rate_limits WHERE reset_at < ?')) {
+              const threshold = boundValues[0] as number
+              for (const [k, v] of mockRateLimitsTable.entries()) {
+                if (v.reset_at < threshold) {
+                  mockRateLimitsTable.delete(k)
+                }
+              }
+            } else if (query.includes('UPDATE github_sync_jobs SET status = "completed"')) {
+              const jobId = boundValues[1] as number
+              for (const v of mockSyncJobsTable.values()) {
+                if (v.id === jobId) v.status = 'completed'
+              }
+            } else if (query.includes('UPDATE github_sync_jobs SET retry_count = retry_count + 1')) {
+              const jobId = boundValues[2] as number
+              for (const v of mockSyncJobsTable.values()) {
+                if (v.id === jobId) {
+                  const currentRetry = typeof v.retry_count === 'number' ? v.retry_count : 0
+                  v.retry_count = currentRetry + 1
+                  v.status = (currentRetry + 1) >= 5 ? 'failed' : 'pending'
+                }
+              }
             }
             return { success: true, results: [] as T[] }
           },
           async all<T = unknown>() {
+            if (query.includes('FROM github_sync_jobs')) {
+              const pending = Array.from(mockSyncJobsTable.values()).filter(j => j.status === 'pending')
+              return { success: true, results: pending as T[] }
+            }
             return { success: true, results: [] as T[] }
           }
         }
@@ -422,5 +489,151 @@ describe('Cloudflare Worker + D1 免费方案安全与业务测试 (worker-secur
     const json = (await resExceed.json()) as { success: boolean; message: string }
     expect(json.success).toBe(false)
     expect(json.message).toContain('提交太频繁')
+  })
+
+  it('10. 并发安全测试：相同指纹并发提交时，原子锁与唯一约束确保 Issue 绝不重复创建', async () => {
+    let createdIssueCount = 0
+    let commentCount = 0
+
+    globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+      const urlStr = String(url)
+      if (urlStr.includes('/issues/') && urlStr.includes('/comments')) {
+        commentCount++
+        return new Response(JSON.stringify({ id: 1000 + commentCount }), { status: 201 })
+      }
+      if (urlStr.endsWith('/issues')) {
+        createdIssueCount++
+        return new Response(JSON.stringify({ number: 300 + createdIssueCount, html_url: `https://github.com/mock/issue/${300 + createdIssueCount}` }), { status: 201 })
+      }
+      return new Response('{}', { status: 200 })
+    })
+
+    const concurrentFp = 'FP-CONCURRENT-LOCK-01'
+
+    // 模拟 5 个并发请求几乎同时到达（不同 IP 避开 429）
+    const promises = Array.from({ length: 5 }, (_, i) => {
+      const req = new Request('https://worker.local/api/feedback', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'cf-connecting-ip': `10.0.0.${i + 1}`
+        },
+        body: JSON.stringify({
+          category: 'video',
+          description: `并发用户 ${i} 遇到播放解析异常`,
+          systemInfo: { appVersion: '0.4.3', os: 'Windows 11', timestamp: Date.now() },
+          diagnosticsSummary: {
+            totalErrors: 1,
+            recentCodes: ['PLAYER_PARSE_FAIL'],
+            errorFingerprint: concurrentFp
+          }
+        })
+      })
+      return worker.fetch(req, mockEnv)
+    })
+
+    const responses = await Promise.all(promises)
+    for (const res of responses) {
+      expect(res.status).toBe(200)
+    }
+
+    // 验证核心并发安全断言：无论多少并发请求，新指纹创建的 GitHub Issue 永远只能是 1 个！
+    expect(createdIssueCount).toBe(1)
+  })
+
+  it('11. 区分平台自动预警与用户反馈：reportType="automated_compatibility_alert" 触发专属标签与预警标题', async () => {
+    let requestBody: Record<string, unknown> | null = null
+
+    globalThis.fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      if (init?.body) {
+        requestBody = JSON.parse(init.body as string)
+      }
+      return new Response(JSON.stringify({ number: 888, html_url: 'https://github.com/mock/issue/888' }), { status: 201 })
+    })
+
+    const req = new Request('https://worker.local/api/feedback', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        reportType: 'automated_compatibility_alert',
+        category: 'course_sync',
+        description: '检测到学习通连续发生结构解析异常，疑似官方前端改版',
+        systemInfo: { appVersion: '0.4.3-beta.1', os: 'win32 10.0.26100', timestamp: Date.now() },
+        diagnosticsSummary: {
+          totalErrors: 2,
+          recentCodes: ['FP-CX-COURSES-PARSE-ERR'],
+          activePlatform: 'chaoxing',
+          errorFingerprint: 'FP-CX-COURSES-PARSE-ERR'
+        }
+      })
+    })
+
+    const res = await worker.fetch(req, mockEnv)
+    expect(res.status).toBe(200)
+    const json = (await res.json()) as { success: boolean; reportType: string; feedbackId: string }
+    expect(json.success).toBe(true)
+    expect(json.reportType).toBe('automated_compatibility_alert')
+    expect(json.feedbackId.startsWith('ALERT-')).toBe(true)
+
+    // 验证发往 GitHub 的请求体满足平台预警规格
+    expect(requestBody).not.toBeNull()
+    const title = (requestBody as any)?.title as string
+    const labels = (requestBody as any)?.labels as string[]
+    expect(title).toContain('[平台预警]')
+    expect(title).toContain('疑似接口改版')
+    expect(labels).toContain('compatibility-alert')
+    expect(labels).toContain('automated')
+    expect(labels).toContain('fingerprint:FP-CX-COURSES-PARSE-ERR')
+  })
+
+  it('12. 定时任务 Cron Trigger：自动清理 30 天前历史数据并异步重试待处理同步任务', async () => {
+    // 放入一条 35 天前的旧数据
+    const thirtyFiveDaysAgo = Date.now() - 35 * 24 * 3600 * 1000
+    mockFeedbackTable.set('FB-OLD-01', {
+      id: 'FB-OLD-01',
+      category: 'login',
+      description: '过期数据',
+      created_timestamp: thirtyFiveDaysAgo
+    })
+    // 放入一条今天的新数据
+    mockFeedbackTable.set('FB-NEW-01', {
+      id: 'FB-NEW-01',
+      category: 'login',
+      description: '正常保留数据',
+      created_timestamp: Date.now()
+    })
+
+    // 放入一条待重试的 sync job
+    mockSyncJobsTable.set('FB-RETRY-01', {
+      id: 99,
+      feedback_id: 'FB-RETRY-01',
+      action: 'create_issue',
+      fingerprint: null,
+      status: 'pending',
+      retry_count: 0
+    })
+    mockFeedbackTable.set('FB-RETRY-01', {
+      id: 'FB-RETRY-01',
+      category: 'ai_assistant',
+      description: '需要定时任务补传的反馈',
+      app_version: '0.4.3',
+      os_info: 'Windows 11',
+      created_timestamp: Date.now()
+    })
+
+    globalThis.fetch = vi.fn(async () => {
+      return new Response(JSON.stringify({ number: 999, html_url: 'https://github.com/mock/issue/999' }), { status: 201 })
+    })
+
+    // 触发 scheduled cron
+    await worker.scheduled({} as any, mockEnv)
+
+    // 验证 35 天前的数据已被清理，新数据保留
+    expect(mockFeedbackTable.has('FB-OLD-01')).toBe(false)
+    expect(mockFeedbackTable.has('FB-NEW-01')).toBe(true)
+
+    // 验证待重试任务已成功同步并完成
+    const job = Array.from(mockSyncJobsTable.values()).find(j => j.feedback_id === 'FB-RETRY-01')
+    expect(job?.status).toBe('completed')
   })
 })

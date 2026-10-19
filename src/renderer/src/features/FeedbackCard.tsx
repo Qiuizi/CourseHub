@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import type { ReactNode, ChangeEvent } from 'react'
 import {
   MessageSquarePlus,
@@ -57,6 +57,22 @@ export function FeedbackCard({
     }
   })
 
+  useEffect(() => {
+    let mounted = true
+    window.coursehub.settings.get().then((res) => {
+      if (mounted && res?.ok && typeof (res.data as Record<string, unknown>)?.anonymousDiagnostics === 'boolean') {
+        const val = Boolean((res.data as Record<string, unknown>).anonymousDiagnostics)
+        setAnonymousTelemetry(val)
+        try {
+          localStorage.setItem('coursehub_opt_in_anonymous_telemetry', String(val))
+        } catch {}
+      }
+    }).catch(() => {})
+    return () => {
+      mounted = false
+    }
+  }, [])
+
   const [screenshotBase64, setScreenshotBase64] = useState<string | null>(null)
   const [screenshotSource, setScreenshotSource] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -75,6 +91,7 @@ export function FeedbackCard({
     try {
       localStorage.setItem('coursehub_opt_in_anonymous_telemetry', String(val))
     } catch {}
+    void window.coursehub.settings.update({ anonymousDiagnostics: val }).catch(() => {})
     onNotify(val ? '已开启匿名平台兼容性反馈' : '已关闭匿名平台兼容性反馈')
   }, [onNotify])
 

@@ -1,5 +1,5 @@
-appId: com.coursehub.desktop
-productName: CourseHub
+appId: com.coursehub.desktop.beta
+productName: CourseHub Beta
 copyright: CourseHub
 
 directories:
@@ -44,7 +44,7 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: CourseHub
+  shortcutName: CourseHub Beta
   # 卸载默认保留用户数据，避免误删设置/缓存
   deleteAppDataOnUninstall: false
   installerLanguages:

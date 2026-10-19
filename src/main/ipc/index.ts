@@ -99,6 +99,102 @@ export interface IpcDeps {
   testbedServer?: TestbedServer
 }
 
+/**
+ * 平台兼容性自动预警检测与上报：
+ * 只有用户显式同意 (settings.anonymousDiagnostics === true) 且对应适配器状态进入 suspected_api_change
+ * 时，才自动上报脱敏错误特征码至反馈服务。
+ * 包含单机 6 小时冷却锁，防止网络异常导致死循环上报。
+ */
+export async function checkAndDispatchCompatibilityAlert(
+  platform: PlatformId,
+  deps: Pick<IpcDeps, 'store'>
+): Promise<{ reported: boolean; reason?: string }> {
+  try {
+    const settings = await deps.store.readJson<{ anonymousDiagnostics?: boolean }>('settings.json', {
+      anonymousDiagnostics: false
+    })
+    if (!settings.anonymousDiagnostics) {
+      return { reported: false, reason: 'user_opt_out' }
+    }
+
+    const adapter = getAdapter(platform)
+    if (!adapter || typeof adapter.getHealthReport !== 'function') return { reported: false, reason: 'unsupported' }
+
+    const report = adapter.getHealthReport()
+    if (report.state !== 'suspected_api_change') {
+      return { reported: false, reason: `state_not_alertable:${report.state}` }
+    }
+
+    // 检查单机 6 小时冷却锁
+    const lockKey = `cache/alert_lock_${platform}.json`
+    const lock = await deps.store.readJson<{ lastAlertAt: number; fingerprint: string } | null>(lockKey, null)
+    const now = Date.now()
+    const SIX_HOURS_MS = 6 * 3600 * 1000
+
+    if (lock && lock.fingerprint === report.errorFingerprint && now - lock.lastAlertAt < SIX_HOURS_MS) {
+      return { reported: false, reason: 'throttled_by_local_lock' }
+    }
+
+    const remoteEndpoint =
+      process.env.COURSEHUB_FEEDBACK_ENDPOINT ||
+      'https://coursehub-feedback-staging.tangziqi6609.workers.dev/api/feedback'
+
+    const platformLabel = platform === 'chaoxing' ? '学习通' : platform === 'yuketang' ? '雨课堂' : platform
+    const workerPayload = {
+      reportType: 'automated_compatibility_alert',
+      category: 'course_sync',
+      description: `[平台自动预警] 检测到${platformLabel}连续 ${report.consecutiveFailures} 次发生课程结构解析异常，疑似官方前端改版。`,
+      systemInfo: {
+        appVersion: typeof app?.getVersion === 'function' ? app.getVersion() : '0.4.3-beta.1',
+        os: `${process.platform} ${os.release()}`,
+        arch: process.arch,
+        timestamp: now
+      },
+      diagnosticsSummary: {
+        totalErrors: report.consecutiveFailures,
+        recentCodes: [report.errorFingerprint || 'PARSE_ERROR'],
+        activePlatform: platform,
+        errorFingerprint: report.errorFingerprint || undefined
+      }
+    }
+
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 6000)
+    const resp = await fetch(remoteEndpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(process.env.COURSEHUB_FEEDBACK_STAGING_KEY
+          ? { 'X-CourseHub-Staging-Key': process.env.COURSEHUB_FEEDBACK_STAGING_KEY }
+          : {})
+      },
+      body: JSON.stringify(workerPayload),
+      signal: controller.signal
+    })
+    clearTimeout(timer)
+
+    if (resp.ok) {
+      await deps.store.writeJson(lockKey, {
+        lastAlertAt: now,
+        fingerprint: report.errorFingerprint || 'unknown'
+      })
+      void deps.store.log('warn', 'compatibility_alert_dispatched', {
+        platform,
+        fingerprint: report.errorFingerprint
+      })
+      return { reported: true }
+    } else {
+      return { reported: false, reason: `http_status_${resp.status}` }
+    }
+  } catch (err) {
+    void deps.store.log('warn', 'compatibility_alert_failed', {
+      platform,
+      error: String(err)
+    })
+    return { reported: false, reason: String(err) }
+  }
+}
+
 export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () => void } {
   const ai = new DeepSeekClient(deps.store)
   const observers = new Map<string, PlayerObserver>()
@@ -293,18 +389,30 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
   })
 
   handle('browser:capture-view', async (_e, payload) => {
-    const p = payload as {
-      platformId?: unknown
-      mode?: unknown
-      questionId?: unknown
-    }
+    const p = typeof payload === 'string'
+      ? { platformId: payload, mode: undefined, questionId: undefined }
+      : (payload as {
+          platformId?: unknown
+          mode?: unknown
+          questionId?: unknown
+        })
     const id = platformId(p?.platformId)
     const mode = (p?.mode === 'full-question' || p?.mode === 'full-page') ? p.mode : 'viewport'
     const targetQid = typeof p?.questionId === 'string' ? p.questionId : undefined
 
     const b = deps.browsers.get(id)
-    const wc = b?.webContents
+    if (!b) throw new CodedError('NOT_FOUND', '平台视图未打开')
+    b.ensureView()
+    const win = deps.getWindow()
+    if (win) b.attach(win)
+    b.setVisible(true)
+    const wc = b.webContents
     if (!wc || wc.isDestroyed()) throw new CodedError('NOT_FOUND', '平台视图未打开')
+
+    const curBounds = b.debugBounds().bounds
+    if (!curBounds || curBounds.width <= 0 || curBounds.height <= 0) {
+      b.setBounds({ x: 0, y: 0, width: 800, height: 600 })
+    }
 
     let dataUrl = ''
     let width = 0
@@ -509,9 +617,13 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
       }
     } else {
       // 默认：当前可见视口快速截图
-      const img = await wc.capturePage()
+      let img = await wc.capturePage()
+      if (img.isEmpty() || img.getSize().width === 0) {
+        await new Promise((r) => setTimeout(r, 200))
+        img = await wc.capturePage()
+      }
       const pngData = img.toPNG()
-      const isBlack = pngData.length > 0 && pngData.subarray(0, 200).every(b => b === 0)
+      const isBlack = pngData.length > 0 && pngData.subarray(0, 200).every((b) => b === 0)
       dataUrl = isBlack ? '' : img.toDataURL()
       const size = img.getSize()
       width = size.width
@@ -701,6 +813,7 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
       count: res.courses?.length ?? 0,
       error: res.error ?? null
     })
+    void checkAndDispatchCompatibilityAlert(id, deps)
     return res
   })
 
@@ -771,7 +884,11 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     if (!adapter?.listChapters) {
       return { ok: false, chapters: [], error: '该平台暂不支持章节目录读取' }
     }
-    return adapter.listChapters(ses, courseId, clazzId, cpi)
+    const res = await adapter.listChapters(ses, courseId, clazzId, cpi)
+    if (!res.ok) {
+      void checkAndDispatchCompatibilityAlert(id, deps)
+    }
+    return res
   })
 
   handle('testbed:server-info', async () => {
@@ -1381,7 +1498,8 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     return deps.store.readJson('settings.json', {
       theme: 'dark',
       notifications: true,
-      pollIntervalSeconds: 60
+      pollIntervalSeconds: 60,
+      anonymousDiagnostics: false
     })
   })
 
@@ -1389,7 +1507,13 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     const current = await deps.store.readJson<Record<string, unknown>>('settings.json', {})
     const next = { ...current, ...(payload as Record<string, unknown>) }
     // 白名单：只接受这些键
-    const allowed = new Set(['theme', 'notifications', 'pollIntervalSeconds', 'continuousPlayback'])
+    const allowed = new Set([
+      'theme',
+      'notifications',
+      'pollIntervalSeconds',
+      'continuousPlayback',
+      'anonymousDiagnostics'
+    ])
     const filtered: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(next)) if (allowed.has(k)) filtered[k] = v
     await deps.store.writeJson('settings.json', filtered)
@@ -1504,6 +1628,12 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     })
   })
 
+  handle('diagnostics:check-compatibility-alert', async (_e, payload) => {
+    const p = payload as { platformId?: unknown } | undefined
+    const id = platformId(p?.platformId)
+    return await checkAndDispatchCompatibilityAlert(id, deps)
+  })
+
   handle('feedback:submit', async (_event, payload: unknown) => {
     const data = payload as FeedbackSubmissionPayload
     if (!data || typeof data !== 'object') {
@@ -1519,8 +1649,10 @@ export function registerIpc(deps: IpcDeps): { ai: DeepSeekClient; dispose: () =>
     const randStr = Math.random().toString(36).substring(2, 6).toUpperCase()
     const feedbackId = `FB-${dateStr}-${randStr}`
 
-    // 检查是否有配置线上反馈服务
-    const remoteEndpoint = process.env.COURSEHUB_FEEDBACK_ENDPOINT
+    // 检查是否有配置线上反馈服务 (默认指向经审核的 Staging 免费实例，支持免配置直接联调)
+    const remoteEndpoint =
+      process.env.COURSEHUB_FEEDBACK_ENDPOINT ||
+      'https://coursehub-feedback-staging.tangziqi6609.workers.dev/api/feedback'
     let submittedOnline = false
     let onlineMsg = ''
     let issueNum: number | undefined

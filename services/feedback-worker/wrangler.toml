@@ -24,3 +24,8 @@ database_id = "dbd0ee7e-7644-45f5-a99f-4fb3b8d34117"
 
 # 注意：服务端密钥不得明文写入此文件，请使用 Cloudflare CLI 交互式安全注入：
 # npx wrangler secret put GITHUB_TOKEN --env staging
+
+# 定时触发器（每日 UTC 03:00 / 北京时间 11:00 自动清理 30 天数据并重试失败的 GitHub 同步任务）
+[env.staging.triggers]
+crons = ["0 3 * * *"]
+

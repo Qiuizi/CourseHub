@@ -922,11 +922,16 @@ async function main() {
     const classroomAiCheck = await win.evaluate(async () => {
       // 0. 切换至平台浏览场景并激活测试台
       const navBtn = document.querySelector('[data-scene="browser"]')
-      if (navBtn) navBtn.click()
+      if (navBtn && typeof navBtn.click === 'function') navBtn.click()
+      await window.coursehub.browser.setBounds({
+        platformId: 'testbed',
+        bounds: { x: 0, y: 0, width: 800, height: 600 }
+      })
+      await window.coursehub.browser.setVisible({ platformId: 'testbed', visible: true })
       await new Promise((r) => setTimeout(r, 400))
 
       const testbedPill = document.querySelector('[data-platform="testbed"]')
-      if (testbedPill) testbedPill.click()
+      if (testbedPill && typeof testbedPill.click === 'function') testbedPill.click()
       await new Promise((r) => setTimeout(r, 600))
 
       // 1. 加载超星测验 Fixture
@@ -966,6 +971,7 @@ async function main() {
         hasIframeQuestion,
         validDataUrl,
         capResOk: capRes.ok,
+        capData: capRes.data,
         hasDrawerInput,
         hasDrawerSend,
         hasExtractBtn,
