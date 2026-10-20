@@ -29,8 +29,8 @@ async function run() {
     // 1. 验证版本与基本 API
     const version = await app.evaluate(async ({ app }) => app.getVersion())
     console.log(`[Updater E2E] 打包应用主进程实际版本: ${version}`)
-    if (version !== '0.4.3-beta.3') {
-      throw new Error(`版本不匹配：期望 0.4.3-beta.3，实际为 ${version}`)
+    if (version !== '0.4.3-beta.4') {
+      throw new Error(`版本不匹配：期望 0.4.3-beta.4，实际为 ${version}`)
     }
 
     // 2. 检查 updater API 是否在 preload 中正确暴露

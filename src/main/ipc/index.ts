@@ -20,7 +20,7 @@ import type {
   PlayPolicy,
   TestActionPlan
 } from '@shared/types'
-import { ok, toErrorResult, CodedError } from '@shared/ipc'
+import { ok, toErrorResult, CodedError, isIpcResult } from '@shared/ipc'
 import { isAllowedRate } from '@shared/video'
 import { validateGeoPoint } from '@shared/geo'
 import { getAdapter, getAllPlatformHealth } from '../adapters'
@@ -606,7 +606,12 @@ export function registerIpc(deps: IpcDeps): {
     ipcMain.handle(channel, async (event, payload): Promise<unknown> => {
       try {
         assertSender(event, deps.getWindow)
-        return ok(await fn(event, payload))
+        const result = await fn(event, payload)
+        // 关键合同防护：若内部 handler 已经返回了符合标准的 IpcResult，直接返回，不再二次包裹 ok()
+        if (isIpcResult(result)) {
+          return result
+        }
+        return ok(result)
       } catch (e) {
         return toErrorResult(e)
       }
@@ -2015,7 +2020,7 @@ export function registerIpc(deps: IpcDeps): {
   })
 
   handle('updater:get-state', async () => {
-    return ok(updateManager.getState())
+    return updateManager.getState()
   })
 
   handle('updater:set-install-on-quit', async (_e, payload?: unknown) => {
@@ -2025,7 +2030,7 @@ export function registerIpc(deps: IpcDeps): {
 
   handle('updater:open-release-page', async () => {
     updateManager.openReleasePage()
-    return ok(null)
+    return null
   })
 
   return {

@@ -12,7 +12,7 @@ import type { AppUpdater } from 'electron-updater'
 vi.mock('electron', () => {
   return {
     app: {
-      getVersion: () => '0.4.3-beta.3',
+      getVersion: () => '0.4.3-beta.4',
       isPackaged: true
     },
     BrowserWindow: class {},
@@ -63,7 +63,7 @@ class MockAppUpdater extends EventEmitter {
   }
 }
 
-describe('原生自动更新系统全流程验收测试 (v0.4.3-beta.3)', () => {
+describe('原生自动更新系统全流程验收测试 (v0.4.3-beta.4)', () => {
   let tmpDir: string
   let store: Store
 
@@ -159,7 +159,7 @@ describe('原生自动更新系统全流程验收测试 (v0.4.3-beta.3)', () => 
       const state = manager.getState()
       expect(state.status).toBe('idle')
       expect(state.channel).toBe('beta')
-      expect(state.currentVersion).toBe('0.4.3-beta.3')
+      expect(state.currentVersion).toBe('0.4.3-beta.4')
     })
 
     it('检测到非公测版本（如正式版 0.4.4）时，严格拦截并转入 not_available，防止意外覆盖正式版', async () => {

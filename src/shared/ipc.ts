@@ -27,6 +27,31 @@ export function isRetryable(code: ErrorCode): boolean {
   return RETRYABLE_CODES.has(code)
 }
 
+/**
+ * 判断一个对象是否已经符合 IpcResult 合同。
+ * 严格校验：
+ * - ok 为 true 时必须包含 data 属性
+ * - ok 为 false 时必须包含具备 code 与 message 的 error 对象
+ * 避免二次包裹产生 { ok: true, data: { ok: true, data: ... } }
+ */
+export function isIpcResult<T = unknown>(val: unknown): val is IpcResult<T> {
+  if (!val || typeof val !== 'object') return false
+  const obj = val as Record<string, unknown>
+  if (typeof obj.ok !== 'boolean') return false
+  if (obj.ok === true) {
+    return 'data' in obj
+  }
+  if (obj.ok === false) {
+    return (
+      typeof obj.error === 'object' &&
+      obj.error !== null &&
+      'code' in obj.error &&
+      'message' in obj.error
+    )
+  }
+  return false
+}
+
 /** 把任意异常转成受控错误，避免把堆栈泄漏到 renderer。 */
 export function toErrorResult(err: unknown): IpcResult<never> {
   if (err && typeof err === 'object' && 'code' in err) {

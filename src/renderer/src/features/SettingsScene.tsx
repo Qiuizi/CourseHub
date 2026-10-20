@@ -408,7 +408,9 @@ export function SettingsScene({
                   ? 'chip-emerald'
                   : updateState?.status === 'error'
                     ? 'chip-neutral'
-                    : 'chip-emerald'
+                    : updateState?.status === 'not_available'
+                      ? 'chip-emerald'
+                      : 'chip-neutral'
             }`}
           >
             {updateState?.status === 'available'
@@ -419,17 +421,28 @@ export function SettingsScene({
                   ? '检测中'
                   : updateState?.status === 'downloading'
                     ? `${updateState.progress?.percent || 0}%`
-                    : '已是最新'}
+                    : updateState?.status === 'not_available'
+                      ? '已是最新'
+                      : updateState?.status === 'error'
+                        ? '检查失败'
+                        : '尚未检查'}
           </span>
         </div>
 
         <Rows
           items={[
-            { k: '当前版本', v: `v${updateState?.currentVersion || '0.4.3-beta.3'}`, mono: true },
-            { k: '更新渠道', v: updateState?.channel === 'beta' ? 'Beta (公测渠道)' : '正式版' },
+            {
+              k: '当前版本',
+              v: updateState?.currentVersion ? `v${updateState.currentVersion}` : 'v0.4.3-beta.4',
+              mono: true
+            },
+            {
+              k: '更新渠道',
+              v: updateState?.channel === 'latest' ? '正式版' : 'Beta (公测渠道)'
+            },
             {
               k: '上次检查',
-              v: updateState?.lastCheckedAt ? new Date(updateState.lastCheckedAt).toLocaleString() : '未检查'
+              v: updateState?.lastCheckedAt ? new Date(updateState.lastCheckedAt).toLocaleString() : '尚未检查'
             },
             {
               k: '更新状态',
@@ -440,9 +453,13 @@ export function SettingsScene({
                     ? `正在下载更新 (${updateState.progress?.percent || 0}%)`
                     : updateState?.status === 'downloaded'
                       ? '更新安装包已下载完成，等待重启生效'
-                      : updateState?.status === 'error'
-                        ? `检查失败: ${updateState.error?.message}`
-                        : '当前已是最新公测版本'
+                      : updateState?.status === 'checking'
+                        ? '正在检查更新...'
+                        : updateState?.status === 'error'
+                          ? `检查失败: ${updateState.error?.message}`
+                          : updateState?.status === 'not_available'
+                            ? '当前已是最新公测版本'
+                            : '尚未检查更新'
             }
           ]}
         />

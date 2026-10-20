@@ -1595,7 +1595,7 @@ export default function App(): JSX.Element {
         state={
           updateState || {
             status: 'idle',
-            currentVersion: '0.4.3-beta.3',
+            currentVersion: '0.4.3-beta.4',
             channel: 'beta',
             info: null,
             progress: null,
