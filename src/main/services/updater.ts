@@ -42,7 +42,7 @@ export class AppUpdateManager {
   constructor(private readonly deps: AppUpdateManagerDeps) {
     this.autoUpdater = deps.updaterInstance || defaultAutoUpdater
 
-    const currentVersion = typeof app?.getVersion === 'function' ? app.getVersion() : '0.4.3-beta.5'
+    const currentVersion = typeof app?.getVersion === 'function' ? app.getVersion() : '0.4.3-beta.6'
 
     this.state = {
       status: 'idle',

@@ -87,8 +87,8 @@ function stopRunningBetaProcesses() {
   } catch {}
 }
 
-const FROM_VERSION = process.env.UPGRADE_FROM_VERSION || '0.4.3-beta.3'
-const TO_VERSION = process.env.UPGRADE_TO_VERSION || '0.4.3-beta.4'
+const FROM_VERSION = process.env.UPGRADE_FROM_VERSION || '0.4.3-beta.5'
+const TO_VERSION = process.env.UPGRADE_TO_VERSION || '0.4.3-beta.6'
 
 async function run() {
   console.log(`================ 真实自动升级端到端验收测试 (${FROM_VERSION} -> ${TO_VERSION}) ================`)
@@ -291,9 +291,17 @@ async function run() {
 
     console.log(`================ 真实自动升级验收全部通过 (PASS) ================`)
   } finally {
-    try {
-      await Promise.race([upgradedApp.close(), sleep(3000)])
-    } catch {}
+    const upPid = upgradedApp.process()?.pid
+    if (upPid && isPidAlive(upPid)) {
+      try {
+        await Promise.race([upgradedApp.close(), sleep(2000)])
+      } catch {}
+      if (isPidAlive(upPid)) {
+        try {
+          process.kill(upPid)
+        } catch {}
+      }
+    }
     stopRunningBetaProcesses()
   }
 }
