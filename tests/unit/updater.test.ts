@@ -36,6 +36,7 @@ class MockAppUpdater extends EventEmitter {
   feedUrlOptions: unknown = null
   installDirectory?: string
   quitAndInstallCalled = false
+  quitAndInstallArgs: [boolean, boolean] | null = null
   downloadUpdateCalled = false
   checkForUpdatesCalled = false
 
@@ -58,8 +59,9 @@ class MockAppUpdater extends EventEmitter {
     return []
   }
 
-  quitAndInstall(): void {
+  quitAndInstall(isSilent = false, isForceRunAfter = false): void {
     this.quitAndInstallCalled = true
+    this.quitAndInstallArgs = [isSilent, isForceRunAfter]
   }
 }
 
@@ -316,6 +318,11 @@ describe('原生自动更新系统全流程验收测试 (v0.4.3-beta.4)', () => 
       busy = false
       const allowRes = await manager.installUpdate()
       expect(allowRes.ok).toBe(true)
+
+      // 等待 setImmediate 触发
+      await new Promise((r) => setImmediate(r))
+      expect(mockUpdater.quitAndInstallCalled).toBe(true)
+      expect(mockUpdater.quitAndInstallArgs).toEqual([true, true])
     })
 
     it('downloadUpdate 异步 Promise 拒绝时，正确进入 error 状态并记录脱敏诊断，支持重试', async () => {

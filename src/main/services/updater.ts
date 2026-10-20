@@ -42,7 +42,7 @@ export class AppUpdateManager {
   constructor(private readonly deps: AppUpdateManagerDeps) {
     this.autoUpdater = deps.updaterInstance || defaultAutoUpdater
 
-    const currentVersion = typeof app?.getVersion === 'function' ? app.getVersion() : '0.4.3-beta.4'
+    const currentVersion = typeof app?.getVersion === 'function' ? app.getVersion() : '0.4.3-beta.5'
 
     this.state = {
       status: 'idle',
@@ -432,15 +432,15 @@ export class AppUpdateManager {
         level: 'info',
         type: 'install_initiated',
         code: 'UPDATE_INSTALL_INITIATED',
-        summary: `更新安装已触发，准备重启进入安装向导 (目标版本: v${this.state.info?.version || ''})`,
+        summary: `更新安装已触发，准备退出并执行静默覆盖安装 (目标版本: v${this.state.info?.version || ''})`,
         data: { targetVersion: this.state.info?.version }
       })
 
-      // NSIS 安装参数：非静默弹出安装向导，安装后自动重新拉起应用
-      // 允许用户审查安装路径，并覆盖当前安装目录
+      // NSIS 安装参数：isSilent = true (静默无缝覆盖，无需用户二次操作向导)，isForceRunAfter = true (安装完成后自动重启)
+      // 仅针对已验证的当前用户环境执行覆盖，锚定当前安装目录，不改变安装范围或触发意外提权
       setImmediate(() => {
         try {
-          this.autoUpdater.quitAndInstall(false, true)
+          this.autoUpdater.quitAndInstall(true, true)
         } catch (e) {
           console.error('[CourseHub Updater] quitAndInstall failed:', e)
         }
